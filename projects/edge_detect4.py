@@ -196,6 +196,7 @@ def getBorderDominantColor(x, y, w, h, approx):
     return [color_names[border_dominant_index]]
 
 while True:
+
     #state = status fo capture read function
     #if state is not True, it means video has been ended or not started successfully
     state,frame = capture.read()
@@ -210,68 +211,83 @@ while True:
     
     #create a new frame to copy the original frame
     clean_frame = frame.copy()
-    #Convert the BGR color scheme to Gray Scale
-    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    #default 5,5 (kernel size)
+
+    hsv_image = cv2.cvtColor(frame,cv2.COLOR_BGR2HSV)
+
+    # Mavi renk aralığı
+    blue_lower = np.array([100, 150, 50])   # Mavi renk için alt sınır
+    blue_upper = np.array([140, 255, 255])  # Mavi renk için üst sınır
+
+    # Kırmızı renk aralığı
+    red_lower_1 = np.array([0, 150, 50])     # Kırmızı renk için alt sınır 1
+    red_upper_1 = np.array([10, 255, 255])   # Kırmızı renk için üst sınır 1
+
+    red_lower_2 = np.array([170, 150, 50])   # Kırmızı renk için alt sınır 2
+    red_upper_2 = np.array([180, 255, 255])  # Kırmızı renk için üst sınır 2
+
+    blue_mask = cv2.inRange(hsv_image, blue_lower, blue_upper)
+
+    # Kırmızı için maske oluşturun (iki aralık)
+    red_mask_1 = cv2.inRange(hsv_image, red_lower_1, red_upper_1)
+    red_mask_2 = cv2.inRange(hsv_image, red_lower_2, red_upper_2)
+    red_mask = cv2.bitwise_or(red_mask_1, red_mask_2)
+
+    final_mask = cv2.bitwise_or(blue_mask, red_mask)
+
+    result = cv2.bitwise_and(frame, frame, mask=final_mask)
+
+    gray_result = cv2.cvtColor(result, cv2.COLOR_BGR2GRAY)
+
+    gray_result = cv2.medianBlur(gray_result, 7)
+    gray_result = cv2.erode(gray_result, kernel=np.ones((5, 5), dtype=np.uint8), iterations=3)
+    gray_result = cv2.morphologyEx(gray_result, cv2.MORPH_CLOSE, kernel=np.ones((3, 3), dtype=np.uint8), iterations=3)
+    
+    edges = cv2.Canny(gray_result, 100, 200)
+ 
+    cv2.imshow("Edges",result)
+    cv2.imshow("Gray",gray_result)
+    cv2.imshow("Edge-2s",edges)
+    # cv2.imshow("Result", result_with_white)
+
+
 
     #--------- BLUR ---------- 
-    blurred_frame = gray_frame
+    # blurred_frame = gray_frame
     #blurred_frame = cv2.GaussianBlur(gray_frame, (5, 5), 0)
     #blurred_frame = cv2.bilateralFilter(gray_frame,9,75,75)
-    blurred_frame = cv2.medianBlur(gray_frame,ksize=5)
+    # blurred_frame = cv2.medianBlur(gray_frame,ksize=5)
     #blurred_frame = cv2.erode(blurred_frame,kernel=np.ones((5,5),dtype=np.uint8),iterations=3)
     #blurred_frame = cv2.dilate(blurred_frame,kernel=np.ones((5,5),dtype=np.uint8),iterations=3)
     #blurred_frame = cv2.morphologyEx(blurred_frame,cv2.MORPH_OPEN,kernel=np.ones((3,3),dtype=np.uint8),iterations=1)
-    blurred_frame = cv2.morphologyEx(blurred_frame,cv2.MORPH_CLOSE,kernel=np.ones((3,3),dtype=np.uint8),iterations=2)
+    # blurred_frame = cv2.morphologyEx(blurred_frame,cv2.MORPH_CLOSE,kernel=np.ones((3,3),dtype=np.uint8),iterations=2)
 
     #equalized_frame = cv2.equalizeHist(blurred_frame) (detayları manyak belirtiyor paraziti arttırıyor).
 
     #--------- DILATE ---------
-    dilateKernel = np.ones((3,3),dtype=np.uint8)
-    blurred_frame = cv2.dilate(blurred_frame,dilateKernel,iterations=5)
+    # dilateKernel = np.ones((3,3),dtype=np.uint8)
+    # blurred_frame = cv2.dilate(blurred_frame,dilateKernel,iterations=5)
 
     #--------- THRESHOLD ----------
     #static threshold
-    _, otsu_thresh_val = cv2.threshold(blurred_frame, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # _, otsu_thresh_val = cv2.threshold(blurred_frame, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
     #adaptive threshold
-    adaptive_threshold = cv2.adaptiveThreshold(blurred_frame,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,cv2.THRESH_BINARY,11,9)
+    # adaptive_threshold = cv2.adaptiveThreshold(blurred_frame,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,cv2.THRESH_BINARY,11,9)
 
     #detects the shape's edges with canny function
 
-    combined_threshold = cv2.bitwise_and(adaptive_threshold,blurred_frame)
-    blurred_frame = combined_threshold
+    # combined_threshold = cv2.bitwise_and(adaptive_threshold,blurred_frame)
+    # blurred_frame = combined_threshold
 
-    #old code 
-    edges = cv2.Canny(blurred_frame, 100, 150)
-
-    #new code
-    #edges = cv2.Canny(blurred_frame,50,180)
-
-    #show the edges with imshow function (new window)
-    cv2.imshow("Edges",edges)
-    cv2.imshow("Blurred",blurred_frame)
-
-    #edges = cv2.Canny(gray_frame, 50, 150)  # Edge Detection
-    #find contours of edges with cv2.findContours function
     contours,_ = cv2.findContours(edges,cv2.RETR_TREE,cv2.CHAIN_APPROX_SIMPLE)
+    filled_frame = np.zeros_like(result)
+
+    cv2.drawContours(filled_frame,contours,-1,(255,255,255),thickness=cv2.FILLED)
+    cv2.imshow("Filled Frame",filled_frame)
     
     #if contours length is greater than 0, it means we found the shape
     if len(contours) > 0:
 
-        # shape_colors = ('b','g','r')
-        # border_colors = ('b','g','r')
-        # shape_dominant_index = None
-        # border_dominant_index = None
-        # histograms = {}
-        # border_histograms = {}
-        # shape_dominant_color = {}
-        # border_dominant_color = {}
-        # color_names = {
-        # 'r': "Red",
-        # 'g': "Green",
-        # 'b': "Blue",
-        # }
 
         for idx,cont in enumerate(contours):
             #-------------EPSILON-------------
