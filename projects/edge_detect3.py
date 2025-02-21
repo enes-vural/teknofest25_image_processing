@@ -5,12 +5,12 @@ import numpy as np
 
 
 #video path for fetch the video that Azize's created.
-video_path = "assets/object_video5.mp4"
+video_path = "firtina-iha/assets/object_video5.mp4"
 
 #capture the video with given path as video_path
 video = cv2.VideoCapture(video_path)
 
-# cam = cv2.VideoCapture(0),
+cam = cv2.VideoCapture(0),
 #test
 
 
@@ -60,6 +60,7 @@ def nothing():
 #camera assigned to zero
 #zero is the default camera of computer.
 
+#TODO: UNMARK HERE FOR CAMERA
 capture = cv2.VideoCapture(0)
 
 #function for get domainant color of shape with histogram
@@ -199,11 +200,11 @@ while True:
     #if state is not True, it means video has been ended or not started successfully
     state,frame = capture.read()
     #this config is need for video read() function
-    #state,frame = video.read() (default)
+    #state,frame = video.read()
     if not state:
         print("Video Ended")
         #Set video to the beginning
-        video.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        #video.set(cv2.CAP_PROP_POS_FRAMES, 0)
         #continue to read the video
         continue
     
@@ -212,22 +213,45 @@ while True:
     #Convert the BGR color scheme to Gray Scale
     gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     #default 5,5 (kernel size)
-    blurred_frame = cv2.GaussianBlur(gray_frame, (5, 5), 0)
 
     #--------- BLUR ---------- 
-    #blurred_frame = cv2.medianBlur(gray_frame,ksize=5)
+    blurred_frame = gray_frame
+    #blurred_frame = cv2.GaussianBlur(gray_frame, (5, 5), 0)
+    #blurred_frame = cv2.bilateralFilter(gray_frame,9,75,75)
+    blurred_frame = cv2.medianBlur(gray_frame,ksize=5)
     #blurred_frame = cv2.erode(blurred_frame,kernel=np.ones((5,5),dtype=np.uint8),iterations=3)
     #blurred_frame = cv2.morphologyEx(blurred_frame,cv2.MORPH_OPEN,kernel=np.ones((3,3),dtype=np.uint8),iterations=1)
+    blurred_frame = cv2.morphologyEx(blurred_frame,cv2.MORPH_CLOSE,kernel=np.ones((3,3),dtype=np.uint8),iterations=2)
+
     #equalized_frame = cv2.equalizeHist(blurred_frame) (detayları manyak belirtiyor paraziti arttırıyor).
 
+    #--------- DILATE ---------
+    dilateKernel = np.ones((3,3),dtype=np.uint8)
+    blurred_frame = cv2.dilate(blurred_frame,dilateKernel,iterations=5)
+
     #--------- THRESHOLD ----------
-    _, otsu_thresh = cv2.threshold(blurred_frame, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    otsu_thresh_val, _ = cv2.threshold(blurred_frame, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    #static threshold
+    _, otsu_thresh_val = cv2.threshold(blurred_frame, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    #adaptive threshold
+    adaptive_threshold = cv2.adaptiveThreshold(blurred_frame,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,cv2.THRESH_BINARY,11,2)
+
     #detects the shape's edges with canny function
-    edges = cv2.Canny(blurred_frame, otsu_thresh_val *0.4, otsu_thresh_val)
+
+    combined_threshold = cv2.bitwise_and(adaptive_threshold,blurred_frame)
+    blurred_frame = combined_threshold
+
+    blurred_frame= cv2.GaussianBlur(blurred_frame, (11, 11), 0)
+
+    #old code 
+    edges = cv2.Canny(blurred_frame, 50, 150)
+
+    #new code
+    #edges = cv2.Canny(blurred_frame,50,180)
 
     #show the edges with imshow function (new window)
     cv2.imshow("Edges",edges)
+    cv2.imshow("Blurred",blurred_frame)
 
     #edges = cv2.Canny(gray_frame, 50, 150)  # Edge Detection
     #find contours of edges with cv2.findContours function
@@ -251,7 +275,10 @@ while True:
         # }
 
         for idx,cont in enumerate(contours):
+            #-------------EPSILON-------------
             #0.026 is a constant value for epsilon
+            #if epsion is increase the shape's can found more easy
+            #but the software can detect multiple and needless shapes.
 
             #epsilon is a value that we use for approxPolyDP function
             epsilon = 0.026*cv2.arcLength(cont,True)
@@ -262,20 +289,28 @@ while True:
 
             #if area is greater than 250, it means we found the shape
             #little shapes are not important for us.
-            if area > 250:
-                #if shape was found, now draw the shape with green color
-                cv2.drawContours(frame, [approx], -1, (0, 255, 0), 2)
+            if area > 1000:
+
                 #edge_count = approx's length
                 #edge_count is a value that we use for detect the shape count
                 edge_count = len(approx)
 
+                #if expected shape not found, continue and dont draw the shape's contours
+                if(edge_count is None or edge_count != 3 and edge_count != 4 and edge_count != 6):
+                    continue
+                else:
+                    #if shape was found, now draw the shape with green color
+                    #cv2.drawContours(frame, [approx], -1, (0, 255, 0), 2)
+                    pass
+
+
                 #------------ FOR CIRCLE -----------
-                #Circularity calculation
+                # Circularity calculation
                 # (x, y), radius = cv2.minEnclosingCircle(cont)
                 # circularity = (4 * np.pi * area) / (cv2.arcLength(cont, True) ** 2)
 
                 #If shape was Triangle
-                if(edge_count==3):
+                if(edge_count==3) and (area > 1000):
                     #x = axis x (top left)
                     #y = axis y (top left)
                     #w = shape's width
@@ -289,6 +324,9 @@ while True:
                     #this is the what we expected in competition
                     #because the red triangle is the target for the weight
                     if(color == "Red"):
+                          #if shape was found, now draw the shape with green color
+                        cv2.drawContours(frame, [approx], -1, (0, 255, 0), 2)
+                        print(f"Triangle : {area}")
 
                         #draw the rectangle with red color
                         #cv2.rectangle(frame,(x,y),(x+w,y+h),(255,0,0),2)
@@ -309,6 +347,12 @@ while True:
                 #The square is the weight that we dropped
                 #The square is the weight that we need to detect in the field
                 if(edge_count==4):
+
+                    #TODO: AREA Değeri Ekrandaki pixel sayısına uygun mu veriyor
+                    #bunu test etmek lazım yoksa farklı çözünürlüklerde farklı area
+                    #durumlarında ratio ile responsive bir algılama şekli yapılması gerekebilir.
+                    #TODO: Enhancement ISSUE #1
+
                     #print the area of shape
                     print(f"AREA: {area}")
                     #print the idx of shape
@@ -330,7 +374,12 @@ while True:
                     #the aspect ratio max value: 1.30
                     #if the aspect ratio is between 0.88 and 1.30
                     #we can say that the shape is square
-                    if (0.88<= aspect_ratio <= 1.30):
+                    #0.88 <= aspect_ratio <= 1.30
+                    #configuration settings for video mode.
+                    #in real life, we need to change the values
+                    if (0.80<= aspect_ratio <= 1.30):
+                        #if shape was found, now draw the shape with green color
+                        cv2.drawContours(frame, [approx], -1, (0, 255, 0), 2)
                         #get the dominant color of square (weight)
                         shape_color = getDominantColor(x,y,w,h)
                         #TODO:
@@ -356,7 +405,8 @@ while True:
                         #if hexagon was blue
                         #blue is expected target in competition
                         if(color == "Blue"):
-
+                            #if shape was found, now draw the shape with green color
+                            cv2.drawContours(frame, [approx], -1, (0, 255, 0), 2)
                             #get hexagon's one edge length (meter)
                             edge_meter = np.sqrt(((h/2)*(h/2) + (w/2)*(w/2)))
                             #print edge's meter.
@@ -384,7 +434,7 @@ while True:
                                 #put text with "Hexagon Target" text to field
                                 cv2.putText(frame,"Hexagon Target",(x,y),cv2.FONT_HERSHEY_SIMPLEX,1,(0,255,0),2)
                                 #put circle to center of hexagon
-                                cv2.circle(frame,(int(x+w/2),int(y+h/2)),5,(255,0,0),-1)
+                                cv2.circle(frame,(int(x+w/2),int(y+h/2)),5,(0,0,255),-1)
     else:
         #removed print method for cleaner terminal
         #print("No Contours Found")
