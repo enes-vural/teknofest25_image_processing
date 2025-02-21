@@ -3,12 +3,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 import time
 
+#mv ~/.espressif ~/.espressif_backup
+
 
 video_path = "assets/object_video5.mp4"
 #video read
 video = cv2.VideoCapture(video_path)
 
-# cam = cv2.VideoCapture(0)
+# cam = cv2.VideoCapture(0),
+#test
+
 
 # if not video.isOpened():
 #     print("Error: Could not open video.")
