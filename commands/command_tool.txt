@@ -1,0 +1,5 @@
+
+disable current epsressif venv
+#mv ~/.espressif ~/.espressif_backup
+
+
