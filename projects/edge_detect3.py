@@ -10,13 +10,13 @@ video_path = "firtina-iha/assets/object_video5.mp4"
 #capture the video with given path as video_path
 video = cv2.VideoCapture(video_path)
 
-cam = cv2.VideoCapture(0),
+# cam = cv2.VideoCapture(0),
 #test
 
 
-# if not video.isOpened():
-#     print("Error: Could not open video.")
-#     exit()
+if not video.isOpened():
+    print("Error: Could not open video.")
+    exit()
 
 #initializeKeyBinds() function is used to listen keyboard actions
 # if you press 'q' key, it will close the window
@@ -198,9 +198,9 @@ def getBorderDominantColor(x, y, w, h, approx):
 while True:
     #state = status fo capture read function
     #if state is not True, it means video has been ended or not started successfully
-    state,frame = capture.read()
+    # state,frame = capture.read()
     #this config is need for video read() function
-    #state,frame = video.read()
+    state,frame = video.read()
     if not state:
         print("Video Ended")
         #Set video to the beginning

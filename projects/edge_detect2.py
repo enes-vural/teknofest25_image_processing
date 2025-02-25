@@ -4,7 +4,7 @@ import numpy as np
 import time
 
 
-video_path = "assets/object_video5.mp4"
+video_path = "firtina-iha/assets/object_video5.mp4"
 #video read
 video = cv2.VideoCapture(video_path)
 
