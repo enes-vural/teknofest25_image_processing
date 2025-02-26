@@ -279,12 +279,15 @@ def get_full_screen_dominant_color():
     print(f"🔵 Blue: {color_ratios['b']:.2f}% | 🟢 Green: {color_ratios['g']:.2f}% | 🔴 Red: {color_ratios['r']:.2f}%")
 
     # Renklerin %50'yi geçip geçmediğini kontrol et
-    dominant_colors = [color for color in color_ratios if color_ratios[color] > 50]
+    dominant_colors = [color for color in color_ratios if color_ratios[color] > 30]
     
     if dominant_colors:
         dominant_color = dominant_colors[0]
         dominant_color_intensity = color_ratios[dominant_color]
-        if abs(dominant_color_intensity - general_intensity > 20):
+        if abs(dominant_color_intensity - general_intensity >= 10):
+            print(abs(dominant_color_intensity - general_intensity))
+            print(abs(dominant_color_intensity - general_intensity))
+            
             return color_names[dominant_colors[0]]
 
     return "No dominant color"  # %50'yi geçmeyqen bir durum varsa
@@ -304,10 +307,10 @@ while True:
     #state = status fo capture read function
     #if state is not True, it means video has been ended or not started successfully
     
-    state,frame = cam.read()
+    # state,frame = cam.read()
     #--------------------------
     #this config is need for video read() function
-    # state,frame = video.read()
+    state,frame = video.read()
 
 
     if not state:
@@ -456,8 +459,8 @@ while True:
                     #because the red triangle is the target for the weight
                     if(color == "Red"):
                           #if shape was found, now draw the shape with green color
-                        cv2.drawContours(frame, [approx], -1, (0, 255, 0), 2)
-                        print(f"Triangle : {area}")
+                        cv2.drawContours(frame, [w_approx], -1, (0, 255, 0), 2)
+                        print(f"Triangle : {w_area}")
 
                         #draw the rectangle with red color
                         #cv2.rectangle(frame,(x,y),(x+w,y+h),(255,0,0),2)
@@ -509,7 +512,10 @@ while True:
                         cv2.drawContours(frame, [w_approx], -1, (0, 255, 0), 2)
                         #get the dominant color of square (weight)
                         shape_color = getDominantColor(x,y,w,h)
-                        update_add_detected_shape("Square","Blue",(x,y))
+                        if(shape_color == "Blue"):
+                            update_add_detected_shape("Square","Blue",(x,y))
+                        elif (shape_color == "Red"):
+                            update_add_detected_shape("Square","Red",(x,y))
                         #TODO:
                         #video sonunda üçgene yaklaşırken bütünü kare zannediyor.
                         #color = getBorderDominantColor(x,y,w,h,approx)
