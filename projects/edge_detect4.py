@@ -2,7 +2,60 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import time
+import queue
+import threading
 
+SHAPE_TIMEOUT = 1
+
+#Queue for detected shapes
+shape_queue = queue.Queue()
+#Dictionary for detected shapes
+detected_shapes = {}
+
+def add_detected_shape_queue(shape_type, shape_color, position):
+    shape_info = {
+        "type":shape_type,
+        "color":shape_color,
+        "position":position,
+        "time_stamp":time.time()
+    }
+    shape_queue.put(shape_info)
+
+def remove_old_shapes():
+    while True:
+        current_time = time.time()
+        to_remove = [key for key, shape in detected_shapes.items() if current_time - shape["time_stamp"] > SHAPE_TIMEOUT]
+
+        for key in to_remove:
+            del detected_shapes[key]
+        time.sleep(1)
+
+def update_add_detected_shape(shape_type, shape_color, shape_position):
+    shape_id = f"{shape_type}_{shape_color}"
+    shape_info = {
+        "id":shape_id,
+        "type":shape_type,
+        "color":shape_color,
+        "position":shape_position,
+        "time_stamp":time.time()
+    }
+    detected_shapes[shape_id] = shape_info
+
+def process_detected_shapes():
+    while True:
+        shape_info = shape_queue.get()
+        print(f"Detected Objects {shape_info['type']}")
+        update_add_detected_shape(
+            shape_type=shape_info["type"],
+            shape_color=shape_info["color"],
+            shape_position=shape_info['position']
+        )
+
+listener_thread = threading.Thread(target=process_detected_shapes,daemon=True)
+listener_thread.start()
+
+cleaner_thread = threading.Thread(target=remove_old_shapes,daemon=True)
+cleaner_thread.start()
 
 #video path for fetch the video that Azize's created.
 video_path = "firtina-iha/assets/object_video5.mp4"
@@ -197,6 +250,16 @@ def getBorderDominantColor(x, y, w, h, approx):
     return [color_names[border_dominant_index]]
 
 while True:
+
+    if detected_shapes:
+        print("\n🔵 Şu an ekrandaki şekiller:")
+        for shape_id, shape in detected_shapes.items():
+            print(f"  ➜ {shape['color']} {shape['type']} - Pozisyon: {shape['position']}")
+    else:
+        print("\n⚠️ Hiçbir şekil ekranda değil!")
+    time.sleep(0.005)
+
+
 
     #state = status fo capture read function
     #if state is not True, it means video has been ended or not started successfully
@@ -396,6 +459,7 @@ while True:
                         cv2.drawContours(frame, [w_approx], -1, (0, 255, 0), 2)
                         #get the dominant color of square (weight)
                         shape_color = getDominantColor(x,y,w,h)
+                        update_add_detected_shape("Square","Blue",(x,y))
                         #TODO:
                         #video sonunda üçgene yaklaşırken bütünü kare zannediyor.
                         #color = getBorderDominantColor(x,y,w,h,approx)
@@ -443,6 +507,7 @@ while True:
 
                 #If shape was Triangle
                 if(edge_count==3) and (area > 500):
+
                     #x = axis x (top left)
                     #y = axis y (top left)
                     #w = shape's width
@@ -459,6 +524,8 @@ while True:
                           #if shape was found, now draw the shape with green color
                         cv2.drawContours(frame, [approx], -1, (0, 255, 0), 2)
                         print(f"Triangle : {area}")
+                        
+                        add_detected_shape_queue("Triangle","Red",(x,y))
 
                         #draw the rectangle with red color
                         #cv2.rectangle(frame,(x,y),(x+w,y+h),(255,0,0),2)
@@ -514,6 +581,7 @@ while True:
                         cv2.drawContours(frame, [approx], -1, (0, 255, 0), 2)
                         #get the dominant color of square (weight)
                         shape_color = getDominantColor(x,y,w,h)
+                        add_detected_shape_queue("Square",shape_color,(x,y))
                         #TODO:
                         #video sonunda üçgene yaklaşırken bütünü kare zannediyor.
                         #color = getBorderDominantColor(x,y,w,h,approx)
@@ -567,6 +635,7 @@ while True:
                                 cv2.putText(frame,"Hexagon Target",(x,y),cv2.FONT_HERSHEY_SIMPLEX,1,(0,255,0),2)
                                 #put circle to center of hexagon
                                 cv2.circle(frame,(int(x+w/2),int(y+h/2)),5,(0,0,255),-1)
+                                add_detected_shape_queue("Hexagon","Blue",(x,y))
     else:
         #removed print method for cleaner terminal
         #print("No Contours Found")
