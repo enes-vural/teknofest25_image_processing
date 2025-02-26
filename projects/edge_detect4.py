@@ -287,7 +287,7 @@ def get_full_screen_dominant_color():
         if abs(dominant_color_intensity - general_intensity > 20):
             return color_names[dominant_colors[0]]
 
-    return "No dominant color"  # %50'yi geçmeyen bir durum varsa
+    return "No dominant color"  # %50'yi geçmeyqen bir durum varsa
 
 while True:
 
