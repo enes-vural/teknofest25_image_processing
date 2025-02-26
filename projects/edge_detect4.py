@@ -5,7 +5,7 @@ import time
 import queue
 import threading
 
-SHAPE_TIMEOUT = 1
+SHAPE_TIMEOUT = 0.5
 
 #Queue for detected shapes
 shape_queue = queue.Queue()
@@ -23,12 +23,13 @@ def add_detected_shape_queue(shape_type, shape_color, position):
 
 def remove_old_shapes():
     while True:
+        time.sleep(1)
         current_time = time.time()
         to_remove = [key for key, shape in detected_shapes.items() if current_time - shape["time_stamp"] > SHAPE_TIMEOUT]
 
         for key in to_remove:
             del detected_shapes[key]
-        time.sleep(1)
+        # cv2.waitKey(1)
 
 def update_add_detected_shape(shape_type, shape_color, shape_position):
     shape_id = f"{shape_type}_{shape_color}"
@@ -250,27 +251,44 @@ def getBorderDominantColor(x, y, w, h, approx):
     return [color_names[border_dominant_index]]
 
 def get_full_screen_dominant_color():
-    shape_colors = ('b', 'g', 'r')
-    histograms = {}
-    shape_dominant_index = None
-    dominant_color = {}
-    color_names = {
-        'r': "Red",
-        'g': "Green",
-        'b': "Blue",
-    }
+    _frame = frame.copy()
+    # BGR kanalları
+    channels = ('b', 'g', 'r')
+    color_names = {'r': "Red", 'g': "Green", 'b': "Blue"}
+    color_ratios = {}
 
-    clean3_frame = frame.copy()
+    # Toplam piksel sayısı
+    total_pixels = _frame.shape[0] * _frame.shape[1]
+
+    # Renk kanallarını al
+    b_channel, g_channel, r_channel = cv2.split(_frame)
     
-    for i,color in enumerate(shape_colors):
-        color_hist = cv2.calcHist([clean3_frame],[i],None,[256],[0,256])
-        histograms[color] = color_hist
-    for color in histograms:
-        max_intensity = np.argmax(histograms[color])
-        dominant_color[color] = max_intensity
+    # Her renk kanalının yoğunluğunu hesapla
+    b_intensity = np.sum(b_channel) / (total_pixels * 255) * 100  # % cinsinden
+    g_intensity = np.sum(g_channel) / (total_pixels * 255) * 100
+    r_intensity = np.sum(r_channel) / (total_pixels * 255) * 100
+
+    # Yüzde oranlarını kaydet
+    color_ratios['b'] = b_intensity
+    color_ratios['g'] = g_intensity
+    color_ratios['r'] = r_intensity
+
+    # Yüzde oranlarını yazdır
+    print(f"🔵 Blue: {color_ratios['b']:.2f}% | 🟢 Green: {color_ratios['g']:.2f}% | 🔴 Red: {color_ratios['r']:.2f}%")
+
+    # Renklerin %50'yi geçip geçmediğini kontrol et
+    dominant_colors = [color for color in color_ratios if color_ratios[color] > 50]
     
-    shape_dominant_index = max(dominant_color,key=dominant_color.get)
-    return color_names[shape_dominant_index]
+    if len(dominant_colors) == 2:
+        # Kırmızı ve Yeşil arasında bir karışım yapıyoruz (örneğin sarı)
+        if 'r' in dominant_colors and 'g' in dominant_colors:
+            return "Yellow"
+    
+    elif dominant_colors:
+        # Eğer sadece bir dominant renk varsa, o rengi döndür
+        return color_names[dominant_colors[0]]
+
+    return "No dominant color"  # %50'yi geçmeyen bir durum varsa
 
 while True:
 
@@ -280,19 +298,17 @@ while True:
             print(f"  ➜ {shape['color']} {shape['type']} - Pozisyon: {shape['position']}")
     else:
         print("\n⚠️ Hiçbir şekil ekranda değil!")
-    time.sleep(0.005)
-
-
-
+    # time.sleep(0.01)
+    cv2.waitKey(1)
 
     
     #state = status fo capture read function
     #if state is not True, it means video has been ended or not started successfully
     
-    # state,frame = cam.read()
+    state,frame = cam.read()
     #--------------------------
     #this config is need for video read() function
-    state,frame = video.read()
+    # state,frame = video.read()
 
 
     if not state:
@@ -304,15 +320,6 @@ while True:
     
     #create a new frame to copy the original frame
     #----------- HSV CONFIG ------------
-    full_screen_intense = get_full_screen_dominant_color()
-    print("Full Screen Intense: ",full_screen_intense)
-
-    if(full_screen_intense == "Blue"):
-        update_add_detected_shape("Hexagon","Blue",(0,0))
-    elif (full_screen_intense == "Red"):
-        update_add_detected_shape("Triangle","Red",(0,0))
-    else:
-        continue
 
     clean_frame = frame.copy()
 
@@ -412,6 +419,15 @@ while True:
     cv2.imshow("Second Frame",w_edges)
     #cv2.imshow("Weight Frame",weight_frame)
     #cv2.imshow("Filled Frame",filled_frame)
+
+    full_screen_intense = get_full_screen_dominant_color()
+    print("Full Screen Intense: ",full_screen_intense)
+
+    if(full_screen_intense == "Blue"):
+        update_add_detected_shape("Hexagon","Blue",(0,0))
+    elif (full_screen_intense == "Red"):
+        update_add_detected_shape("Triangle","Red",(0,0))
+        
 
     if len(weight_contours) > 0:
         if (weight_contours is None):
@@ -687,4 +703,3 @@ while True:
 
 
 
-   
