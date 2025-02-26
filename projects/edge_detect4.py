@@ -249,6 +249,29 @@ def getBorderDominantColor(x, y, w, h, approx):
     #return the most dominant(intense) color of border
     return [color_names[border_dominant_index]]
 
+def get_full_screen_dominant_color():
+    shape_colors = ('b', 'g', 'r')
+    histograms = {}
+    shape_dominant_index = None
+    dominant_color = {}
+    color_names = {
+        'r': "Red",
+        'g': "Green",
+        'b': "Blue",
+    }
+
+    clean3_frame = frame.copy()
+    
+    for i,color in enumerate(shape_colors):
+        color_hist = cv2.calcHist([clean3_frame],[i],None,[256],[0,256])
+        histograms[color] = color_hist
+    for color in histograms:
+        max_intensity = np.argmax(histograms[color])
+        dominant_color[color] = max_intensity
+    
+    shape_dominant_index = max(dominant_color,key=dominant_color.get)
+    return color_names[shape_dominant_index]
+
 while True:
 
     if detected_shapes:
@@ -261,6 +284,8 @@ while True:
 
 
 
+
+    
     #state = status fo capture read function
     #if state is not True, it means video has been ended or not started successfully
     
@@ -279,6 +304,16 @@ while True:
     
     #create a new frame to copy the original frame
     #----------- HSV CONFIG ------------
+    full_screen_intense = get_full_screen_dominant_color()
+    print("Full Screen Intense: ",full_screen_intense)
+
+    if(full_screen_intense == "Blue"):
+        update_add_detected_shape("Hexagon","Blue",(0,0))
+    elif (full_screen_intense == "Red"):
+        update_add_detected_shape("Triangle","Red",(0,0))
+    else:
+        continue
+
     clean_frame = frame.copy()
 
     hsv_image = cv2.cvtColor(frame,cv2.COLOR_BGR2HSV)
