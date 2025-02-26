@@ -268,6 +268,8 @@ def get_full_screen_dominant_color():
     g_intensity = np.sum(g_channel) / (total_pixels * 255) * 100
     r_intensity = np.sum(r_channel) / (total_pixels * 255) * 100
 
+    general_intensity = (b_intensity + g_intensity + r_intensity) / 3
+
     # Yüzde oranlarını kaydet
     color_ratios['b'] = b_intensity
     color_ratios['g'] = g_intensity
@@ -279,14 +281,11 @@ def get_full_screen_dominant_color():
     # Renklerin %50'yi geçip geçmediğini kontrol et
     dominant_colors = [color for color in color_ratios if color_ratios[color] > 50]
     
-    if len(dominant_colors) == 2:
-        # Kırmızı ve Yeşil arasında bir karışım yapıyoruz (örneğin sarı)
-        if 'r' in dominant_colors and 'g' in dominant_colors:
-            return "Yellow"
-    
-    elif dominant_colors:
-        # Eğer sadece bir dominant renk varsa, o rengi döndür
-        return color_names[dominant_colors[0]]
+    if dominant_colors:
+        dominant_color = dominant_colors[0]
+        dominant_color_intensity = color_ratios[dominant_color]
+        if abs(dominant_color_intensity - general_intensity > 20):
+            return color_names[dominant_colors[0]]
 
     return "No dominant color"  # %50'yi geçmeyen bir durum varsa
 
