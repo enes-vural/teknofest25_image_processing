@@ -10,7 +10,6 @@ video_path = "firtina-iha/assets/object_video5.mp4"
 #capture the video with given path as video_path
 video = cv2.VideoCapture(video_path)
 
-# cam = cv2.VideoCapture(0),
 #test
 
 def checkVideoStartState():
@@ -59,6 +58,8 @@ print("----------------------")
 #method for passing
 def nothing():
     pass
+
+cam = cv2.VideoCapture(0)
 #capture the video from camera
 #camera assigned to zero
 #zero is the default camera of computer.
@@ -310,7 +311,7 @@ while True:
     filled_frame = np.zeros_like(fields)
 
     cv2.drawContours(filled_frame,field_contours,-1,(255,255,255),thickness=cv2.FILLED)
-    cv2.drawContours
+    cv2.imshow("Second Frame",w_edges)
     #cv2.imshow("Weight Frame",weight_frame)
     #cv2.imshow("Filled Frame",filled_frame)
 
@@ -320,12 +321,47 @@ while True:
             break
 
         for w_cont in weight_contours:
-            w_epsilon = 0.026*cv2.arcLength(w_cont,True)
+            w_epsilon = 0.028*cv2.arcLength(w_cont,True)
             w_approx = cv2.approxPolyDP(w_cont,w_epsilon,True)
             w_area = cv2.contourArea(w_cont)
             w_edge_count = len(w_approx)
 
-            if(w_area > 250):
+            if(w_area > 2500):
+                if(w_edge_count == 3):
+                    cv2.drawContours(frame,[w_approx],-1,(255,255,0),2)
+                    #x = axis x (top left)
+                    #y = axis y (top left)
+                    #w = shape's width
+                    #h = shape's height
+                    #get the values from approx with boundingRect function
+                    x,y,w,h = cv2.boundingRect(w_approx)
+                    #get the dominant color of triangle
+                    color = getDominantColor(x,y,w,h)
+
+                    #if triangle was red
+                    #this is the what we expected in competition
+                    #because the red triangle is the target for the weight
+                    if(color == "Red"):
+                          #if shape was found, now draw the shape with green color
+                        cv2.drawContours(frame, [approx], -1, (0, 255, 0), 2)
+                        print(f"Triangle : {area}")
+
+                        #draw the rectangle with red color
+                        #cv2.rectangle(frame,(x,y),(x+w,y+h),(255,0,0),2)
+
+                        #print axis x y w h
+                        #print(f"Axis X: {x} Axis Y: {y} Width: {w} Height: {h}")
+
+                        #the center axis X of triangle.
+                        center_x = x+w/2
+                        #the center axis Y of triangle.
+                        center_y = y+h/1.5
+                        #draw the circle with center of triangle
+                        cv2.circle(frame,(int(center_x),int(center_y)),5,(255,0,0),-1)
+                        #draw the text with "Triangle Target" text
+                        cv2.putText(frame,"Triangle Target",(x,y),cv2.FONT_HERSHEY_SIMPLEX,1,(0,255,0),2)
+                        
+
                 if(w_edge_count==4):
 
                     #TODO: AREA Değeri Ekrandaki pixel sayısına uygun mu veriyor
@@ -355,6 +391,7 @@ while True:
                     #configuration settings for video mode.
                     #in real life, we need to change the values
                     if (0.80<= aspect_ratio <= 1.30):
+                        print(f"Ratio: {aspect_ratio}")
                         #if shape was found, now draw the shape with green color
                         cv2.drawContours(frame, [w_approx], -1, (0, 255, 0), 2)
                         #get the dominant color of square (weight)
@@ -384,7 +421,7 @@ while True:
 
             #if area is greater than 250, it means we found the shape
             #little shapes are not important for us.
-            if area > 250:
+            if area > 2500:
 
                 #edge_count = approx's length
                 #edge_count is a value that we use for detect the shape count
