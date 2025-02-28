@@ -45,7 +45,7 @@ def update_add_detected_shape(shape_type, shape_color, shape_position):
 def process_detected_shapes():
     while True:
         shape_info = shape_queue.get()
-        print(f"Detected Objects {shape_info['type']}")
+        #print(f"Detected Objects {shape_info['type']}")
         update_add_detected_shape(
             shape_type=shape_info["type"],
             shape_color=shape_info["color"],
@@ -276,7 +276,7 @@ def get_full_screen_dominant_color():
     color_ratios['r'] = r_intensity
 
     # Yüzde oranlarını yazdır
-    print(f"🔵 Blue: {color_ratios['b']:.2f}% | 🟢 Green: {color_ratios['g']:.2f}% | 🔴 Red: {color_ratios['r']:.2f}%")
+    #print(f"🔵 Blue: {color_ratios['b']:.2f}% | 🟢 Green: {color_ratios['g']:.2f}% | 🔴 Red: {color_ratios['r']:.2f}%")
 
     # Renklerin %50'yi geçip geçmediğini kontrol et
     dominant_colors = [color for color in color_ratios if color_ratios[color] > 30]
@@ -285,8 +285,7 @@ def get_full_screen_dominant_color():
         dominant_color = dominant_colors[0]
         dominant_color_intensity = color_ratios[dominant_color]
         if abs(dominant_color_intensity - general_intensity >= 10):
-            print(abs(dominant_color_intensity - general_intensity))
-            print(abs(dominant_color_intensity - general_intensity))
+            #print(abs(dominant_color_intensity - general_intensity))
             
             return color_names[dominant_colors[0]]
 
@@ -307,10 +306,10 @@ while True:
     #state = status fo capture read function
     #if state is not True, it means video has been ended or not started successfully
     
-    # state,frame = cam.read()
+    state,frame = cam.read()
     #--------------------------
     #this config is need for video read() function
-    state,frame = video.read()
+    # state,frame = video.read()
 
 
     if not state:
@@ -423,7 +422,7 @@ while True:
     #cv2.imshow("Filled Frame",filled_frame)
 
     full_screen_intense = get_full_screen_dominant_color()
-    print("Full Screen Intense: ",full_screen_intense)
+    #print("Full Screen Intense: ",full_screen_intense)
 
     if(full_screen_intense == "Blue"):
         update_add_detected_shape("Hexagon","Blue",(0,0))
@@ -433,7 +432,7 @@ while True:
 
     if len(weight_contours) > 0:
         if (weight_contours is None):
-            print("OK")
+            #print("OK")
             break
 
         for w_cont in weight_contours:
@@ -443,6 +442,7 @@ while True:
             w_edge_count = len(w_approx)
 
             if(w_area > 2500):
+
                 if(w_edge_count == 3):
                     cv2.drawContours(frame,[w_approx],-1,(255,255,0),2)
                     #x = axis x (top left)
@@ -460,10 +460,11 @@ while True:
                     if(color == "Red"):
                           #if shape was found, now draw the shape with green color
                         cv2.drawContours(frame, [w_approx], -1, (0, 255, 0), 2)
-                        print(f"Triangle : {w_area}")
+                        #print(f"Triangle : {w_area}")
 
                         #draw the rectangle with red color
                         #cv2.rectangle(frame,(x,y),(x+w,y+h),(255,0,0),2)
+                        update_add_detected_shape("Triangle","Red",(x,y))
 
                         #print axis x y w h
                         #print(f"Axis X: {x} Axis Y: {y} Width: {w} Height: {h}")
@@ -477,7 +478,6 @@ while True:
                         #draw the text with "Triangle Target" text
                         cv2.putText(frame,"Triangle Target",(x,y),cv2.FONT_HERSHEY_SIMPLEX,1,(0,255,0),2)
                         
-
                 if(w_edge_count==4):
 
                     #TODO: AREA Değeri Ekrandaki pixel sayısına uygun mu veriyor
@@ -486,7 +486,7 @@ while True:
                     #TODO: Enhancement ISSUE #1
 
                     #print the area of shape
-                    print(f"AREA: {w_area}")
+                    #print(f"AREA: {w_area}")
                 
                     #get the values from approx with boundingRect function
                     x,y,w,h = cv2.boundingRect(w_approx)
@@ -507,7 +507,7 @@ while True:
                     #configuration settings for video mode.
                     #in real life, we need to change the values
                     if (0.80<= aspect_ratio <= 1.30):
-                        print(f"Ratio: {aspect_ratio}")
+                        #print(f"Ratio: {aspect_ratio}")
                         #if shape was found, now draw the shape with green color
                         cv2.drawContours(frame, [w_approx], -1, (0, 255, 0), 2)
                         #get the dominant color of square (weight)
@@ -579,15 +579,15 @@ while True:
                     if(color == "Red"):
                           #if shape was found, now draw the shape with green color
                         cv2.drawContours(frame, [approx], -1, (0, 255, 0), 2)
-                        print(f"Triangle : {area}")
+                        #print(f"Triangle : {area}")
                         
                         add_detected_shape_queue("Triangle","Red",(x,y))
 
                         #draw the rectangle with red color
                         #cv2.rectangle(frame,(x,y),(x+w,y+h),(255,0,0),2)
 
-                        #print axis x y w h
-                        #print(f"Axis X: {x} Axis Y: {y} Width: {w} Height: {h}")
+                        ##print axis x y w h
+                        ##print(f"Axis X: {x} Axis Y: {y} Width: {w} Height: {h}")
 
                         #the center axis X of triangle.
                         center_x = x+w/2
@@ -608,11 +608,11 @@ while True:
                     #durumlarında ratio ile responsive bir algılama şekli yapılması gerekebilir.
                     #TODO: Enhancement ISSUE #1
 
-                    #print the area of shape
-                    print(f"AREA: {area}")
-                    #print the idx of shape
+                    ##print the area of shape
+                    #print(f"AREA: {area}")
+                    ##print the idx of shape
                     #idx is the number of detected shape (identifier)
-                    print(f"IDX: {idx}")
+                    #print(f"IDX: {idx}")
                 
                     #get the values from approx with boundingRect function
                     x,y,w,h = cv2.boundingRect(approx)
@@ -665,8 +665,8 @@ while True:
                             cv2.drawContours(frame, [approx], -1, (0, 255, 0), 2)
                             #get hexagon's one edge length (meter)
                             edge_meter = np.sqrt(((h/2)*(h/2) + (w/2)*(w/2)))
-                            #print edge's meter.
-                            print(f"Edge Meter: {edge_meter}")
+                            ##print edge's meter.
+                            #print(f"Edge Meter: {edge_meter}")
 
                             #1.154 expected ratio
                             #width = height*2/np.sqrt(3) =? 1.154 * height
@@ -674,8 +674,8 @@ while True:
                             #calculate hexagon's ratio.
                             #calculated ratio equals = width / height
                             calculated_ratio = w/h
-                            #print the calculated ratio
-                            print(f"Calculated Ratio: {calculated_ratio}")
+                            ##print the calculated ratio
+                            #print(f"Calculated Ratio: {calculated_ratio}")
                             
                             #calcualte the ratio with given formula
                             #height*2 / 3^2 * 1.154 * height
@@ -693,8 +693,8 @@ while True:
                                 cv2.circle(frame,(int(x+w/2),int(y+h/2)),5,(0,0,255),-1)
                                 add_detected_shape_queue("Hexagon","Blue",(x,y))
     else:
-        #removed print method for cleaner terminal
-        #print("No Contours Found")
+        #removed #print method for cleaner terminal
+        ##print("No Contours Found")
         pass
 
     #show original frame with imshow function
