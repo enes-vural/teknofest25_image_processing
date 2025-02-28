@@ -12,6 +12,9 @@ shape_queue = queue.Queue()
 #Dictionary for detected shapes
 detected_shapes = {}
 
+#change the variable on your tests.
+isDeviceMac:bool = True
+
 def add_detected_shape_queue(shape_type, shape_color, position):
     shape_info = {
         "type":shape_type,
@@ -117,6 +120,26 @@ cam = cv2.VideoCapture(0)
 #capture the video from camera
 #camera assigned to zero
 #zero is the default camera of computer.
+
+
+def calculatePixelValue(isMacbook:bool) ->int:
+    #for Macbook Screens 
+    #formula 224 / 2.54 ~= 88.19px
+    #1 cm ~= 88px
+    #1cm * 1cm = 88px * 88px = 7744px
+    #if the shape's area is greater than 7744px it means it contains more than 1 cm^2 in screen.
+
+    #for Default Windows Screens
+    #formula 96 / 2.54  ~= 37.8px
+    #1 cm ~= 38px
+    #1cm * 1cm = 38px * 38px = 1444px
+    #if the shape's area is greater than 1444px it means it contains more than 1 cm^2 in screen.
+
+    if isMacbook:
+        return 7744
+    else:
+        return 1444
+
 
 #function for get domainant color of shape with histogram
 def getDominantColor(x,y,w,h):
@@ -441,7 +464,7 @@ while True:
             w_area = cv2.contourArea(w_cont)
             w_edge_count = len(w_approx)
 
-            if(w_area > 2500):
+            if(w_area > calculatePixelValue(isDeviceMac)):
 
                 if(w_edge_count == 3):
                     cv2.drawContours(frame,[w_approx],-1,(255,255,0),2)
@@ -513,6 +536,7 @@ while True:
                         #get the dominant color of square (weight)
                         shape_color = getDominantColor(x,y,w,h)
                         if(shape_color == "Blue"):
+                            print(x,y,w,h)
                             update_add_detected_shape("Square","Blue",(x,y))
                         elif (shape_color == "Red"):
                             update_add_detected_shape("Square","Red",(x,y))
@@ -541,7 +565,7 @@ while True:
 
             #if area is greater than 250, it means we found the shape
             #little shapes are not important for us.
-            if area > 2500:
+            if area > calculatePixelValue(isDeviceMac):
 
                 #edge_count = approx's length
                 #edge_count is a value that we use for detect the shape count
@@ -562,7 +586,7 @@ while True:
                 # circularity = (4 * np.pi * area) / (cv2.arcLength(cont, True) ** 2)
 
                 #If shape was Triangle
-                if(edge_count==3) and (area > 500):
+                if(edge_count==3) and area> calculatePixelValue(isDeviceMac):
 
                     #x = axis x (top left)
                     #y = axis y (top left)
@@ -651,7 +675,7 @@ while True:
                 #and area must be greater than 300
                 #because the cv2 detects other circles as hexagon
                 #we need to filter the noisy shapes with area
-                if(edge_count==6) and (area >300):
+                if(edge_count==6) and (area > calculatePixelValue(isDeviceMac)):
                         #get the x,y,w,h axis with boundingRect function
                         x,y,w,h = cv2.boundingRect(approx)
                         #get the dominant color of hexagon
