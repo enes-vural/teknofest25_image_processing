@@ -5,7 +5,7 @@ import time
 import queue
 import threading
 
-SHAPE_TIMEOUT = 0.5
+SHAPE_TIMEOUT = 1
 
 #Queue for detected shapes
 shape_queue = queue.Queue()
