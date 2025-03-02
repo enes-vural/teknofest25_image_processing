@@ -491,11 +491,18 @@ while True:
 
                         #print axis x y w h
                         #print(f"Axis X: {x} Axis Y: {y} Width: {w} Height: {h}")
+        
+                        triangle_points = approx.reshape(-1,2)
+
+                        x1,y1 = triangle_points[0]
+                        x2,y2 = triangle_points[1]
+                        x3,y3 = triangle_points[2]
 
                         #the center axis X of triangle.
-                        center_x = x+w/2
+                        center_x = (x1+x2+x3)/3
                         #the center axis Y of triangle.
-                        center_y = y+h/1.5
+                        center_y = (y1+y2+y3)/3
+
                         #draw the circle with center of triangle
                         cv2.circle(frame,(int(center_x),int(center_y)),5,(255,0,0),-1)
                         #draw the text with "Triangle Target" text
@@ -613,10 +620,16 @@ while True:
                         ##print axis x y w h
                         ##print(f"Axis X: {x} Axis Y: {y} Width: {w} Height: {h}")
 
+                        triangle_points = approx.reshape(-1,2)
+                        x1,y1 = triangle_points[0]
+                        x2,y2 = triangle_points[1]
+                        x3,y3 = triangle_points[2]
+
                         #the center axis X of triangle.
-                        center_x = x+w/2
+                        center_x = (x1+x2+x3)/3
                         #the center axis Y of triangle.
-                        center_y = y+h/1.5
+                        center_y = (y1+y2+y3)/3
+
                         #draw the circle with center of triangle
                         cv2.circle(frame,(int(center_x),int(center_y)),5,(255,0,0),-1)
                         #draw the text with "Triangle Target" text
