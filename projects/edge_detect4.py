@@ -491,8 +491,8 @@ while True:
 
                         #print axis x y w h
                         #print(f"Axis X: {x} Axis Y: {y} Width: {w} Height: {h}")
-        
-                        triangle_points = approx.reshape(-1,2)
+
+                        triangle_points = w_approx.reshape(-1,2)
 
                         x1,y1 = triangle_points[0]
                         x2,y2 = triangle_points[1]
