@@ -90,9 +90,9 @@ while True:
     full_screen_intense = cv2h_instance.get_full_screen_dominant_color(frame)
 
 
-    if(full_screen_intense == const.Color.BLUE.value):
+    if full_screen_intense == const.Color.BLUE.value:
         th_instance.addHexagonInside()
-    elif (full_screen_intense == const.Color.RED.value):
+    elif full_screen_intense == const.Color.RED.value:
         th_instance.addTriangleInside()
         
 
@@ -103,13 +103,13 @@ while True:
             w_approx = cv2h_instance.returnApprox(w_cont,w_epsilon)
             w_area = cv2h_instance.returnArea(w_cont)
 
-            if (w_area <  cv2_helper.Cv2Helper.calculatePixelValue()):
+            if w_area <  cv2_helper.Cv2Helper.calculatePixelValue():
                 continue
 
             w_edge_count = cv2h_instance.returnEdgeCount(w_approx)
             x,y,w,h = cv2h_instance.returnSizes(w_approx)
 
-            if (w_edge_count == 3) and cv2h_instance.getShapeColor(clean_frame, x, y, w, h) == const.Color.RED.value:
+            if w_edge_count == 3 and cv2h_instance.getShapeColor(clean_frame, x, y, w, h) == const.Color.RED.value:
                 cv2h_instance.startDrawContours(frame,w_approx)
                 th_instance.addTriangleOutside(x,y)
                 center_x, center_y = cv2h_instance.getCenterOfTriangle(w_approx)
@@ -135,7 +135,7 @@ while True:
             edge_count = cv2h_instance.returnEdgeCount(approx)
             x,y,w,h = cv2h_instance.returnSizes(approx)
 
-            if(edge_count==3) and cv2h_instance.getShapeColor(clean_frame,x,y,w,h) == const.Color.RED.value:
+            if edge_count==3 and cv2h_instance.getShapeColor(clean_frame,x,y,w,h) == const.Color.RED.value:
                 cv2h_instance.startDrawContours(frame,approx)
                 th_instance.addTriangleOutside(x,y)
                 center_x, center_y = cv2h_instance.getCenterOfTriangle(approx)
@@ -149,7 +149,7 @@ while True:
                 cv2h_instance.drawText(frame,f"Weight {shape_color}",x,y)
 
         
-            elif(edge_count==6) and cv2h_instance.getShapeColor(clean_frame,x,y,w,h) == const.Color.BLUE.value:        
+            elif edge_count==6 and cv2h_instance.getShapeColor(clean_frame,x,y,w,h) == const.Color.BLUE.value:        
                 cv2h_instance.startDrawContours(frame,approx)
                 th_instance.addHexagonOutside(x,y)
                 cv2h_instance.drawText(frame,"Hexagon Target",x,y)
