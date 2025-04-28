@@ -5,6 +5,7 @@ import helper.init as init
 import helper.threads as threads
 import helper.print_helper as printh
 import helper.cv2.cv2_helper as cv2_helper
+import numpy as np
 
 cv2h_instance = cv2_helper.Cv2Helper()
 th_instance = threads.ObjectThreads()
@@ -16,8 +17,8 @@ listener_thread.start()
 cleaner_thread = threading.Thread(target=th_instance.remove_old_shapes,daemon=True)
 cleaner_thread.start()
 
-init_instance.run()
-init_instance.checkVideoStartState()
+# init_instance.run()
+# init_instance.checkVideoStartState()
 
 camera = cv2.VideoCapture(0)
 
@@ -150,11 +151,47 @@ while True:
 
         
             elif edge_count==6 and cv2h_instance.getShapeColor(clean_frame,x,y,w,h) == const.Color.BLUE.value:        
-                cv2h_instance.startDrawContours(frame,approx)
-                th_instance.addHexagonOutside(x,y)
-                cv2h_instance.drawText(frame,"Hexagon Target",x,y)
-                cv2h_instance.drawCenter(frame,x+w/2,y+h/2)
+                sides = []
+                for i in range(6):
+                    # i point of hexagon
+                    p1 = approx[i][0]
+                    # i+1 point of hexagon
+                    # %6 to wrap around if last point is 5 and second point is 0 in logic.
+                    p2 = approx[(i + 1) % 6][0]
+                    # Calculate the length of the side betwwen two points.
+                    side_length = np.linalg.norm(p1 - p2)
+                    # Append the side length to the list
+                    sides.append(side_length)
 
+                # Get the average side length from the list 
+                avg_side_length = np.mean(sides)
+
+                # Calculate the deviation of each side from the average metric.
+                side_deviation = [abs(side - avg_side_length) / avg_side_length for side in sides]
+
+                # if all deviations are less than %15 of the average side length
+                if all(deviation < 0.15 for deviation in side_deviation):
+                    # get perimeter and area of the hexagon
+                    peri = cv2.arcLength(approx, True)
+                    area = cv2.contourArea(approx)
+                    # Calculae the circularity of the hexagon
+                    if peri != 0:
+                        circularity = 4 * np.pi * (area / (peri * peri))
+                    else:
+                        circularity = 0
+
+                    # if the circularity is between %70 and %95
+                    # it is a hexagon
+                    # in default hexagon circularity is between %70 and (%75 or %85)
+                    # but in our case we are using %95 because it has more accuracy in my test :)
+                    if 0.7 <= circularity <= 0.95:
+                        # Done it's a hexagon !
+                        #
+                        cv2h_instance.startDrawContours(frame, approx)
+                        th_instance.addHexagonOutside(x, y)
+                        cv2h_instance.drawText(frame, "Hexagon Target", x, y)
+                        cv2h_instance.drawCenter(frame, x + w / 2, y + h / 2)     
+                        
     else:
         pass
 
