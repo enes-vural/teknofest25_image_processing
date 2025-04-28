@@ -158,7 +158,7 @@ while True:
                     # i+1 point of hexagon
                     # %6 to wrap around if last point is 5 and second point is 0 in logic.
                     p2 = approx[(i + 1) % 6][0]
-                    # Calculate the length of the side betwwen two points.
+                    # Calculate the length of the side between two points.
                     side_length = np.linalg.norm(p1 - p2)
                     # Append the side length to the list
                     sides.append(side_length)
@@ -174,7 +174,7 @@ while True:
                     # get perimeter and area of the hexagon
                     peri = cv2.arcLength(approx, True)
                     area = cv2.contourArea(approx)
-                    # Calculae the circularity of the hexagon
+                    # Calculate the circularity of the hexagon
                     if peri != 0:
                         circularity = 4 * np.pi * (area / (peri * peri))
                     else:
@@ -191,7 +191,7 @@ while True:
                         th_instance.addHexagonOutside(x, y)
                         cv2h_instance.drawText(frame, "Hexagon Target", x, y)
                         cv2h_instance.drawCenter(frame, x + w / 2, y + h / 2)     
-                        
+
     else:
         pass
 
