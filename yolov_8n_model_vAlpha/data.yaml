@@ -1,0 +1,13 @@
+train: C:/Users/alper/Downloads/firtina.v1-alpha.yolov8/train/images
+val: C:/Users/alper/Downloads/firtina.v1-alpha.yolov8/valid/images
+test: C:/Users/alper/Downloads/firtina.v1-alpha.yolov8/test/images
+
+nc: 3
+names: ['Hexagon', 'Square', 'Triangle']
+
+roboflow:
+  workspace: firtinateknofest
+  project: firtina-fkr8y
+  version: 1
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/firtinateknofest/firtina-fkr8y/dataset/1
