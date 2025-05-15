@@ -1,19 +1,3 @@
-#!/usr/bin/env python3
-"""
-Optimized Real-time Colored Shape Detection System for Raspberry Pi 8GB RAM
-
-This script uses OpenCV to detect specific colored geometric shapes from a camera feed:
-- Red triangle
-- Blue hexagon  
-- Red square
-- Blue square
-
-Uses libcamera and GStreamer pipeline for optimal Raspberry Pi camera performance.
-
-Author: Claude
-Date: May 15, 2025
-"""
-
 import cv2
 import numpy as np
 import time
@@ -27,6 +11,7 @@ import signal
 
 # Enable OpenCV optimizations (uses NEON SIMD instructions on ARM if available)
 cv2.setUseOptimized(True)
+
 
 # Ensure OpenCV is using optimized code paths
 if cv2.useOptimized():
@@ -201,8 +186,8 @@ class ShapeDetector:
         self.blue_upper = np.array([140, 255, 255], dtype=np.uint8)
         
         # Detection thresholds
-        self.min_contour_area = 200  # Smaller minimum area for reduced resolution
-        self.approx_polygon_epsilon = 0.025
+        self.min_contour_area = 7500  # Smaller minimum area for reduced resolution
+        self.approx_polygon_epsilon = 0.015
         
         # Fast morphological kernels (pre-computed)
         self.kernel3 = np.ones((3, 3), np.uint8)  # Smaller kernel for better performance
