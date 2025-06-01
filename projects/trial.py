@@ -1,1280 +1,1120 @@
 import cv2
 import numpy as np
 import time
-from collections import deque
+import json
 import threading
 import queue
 import os
+import sys
+import socket
+import struct
 import atexit
 import subprocess
 import signal
-import socket
-import struct
-import json
 import logging
+from collections import deque
 from datetime import datetime
-import hashlib
 import asyncio
 import websockets
-from typing import Optional, Tuple, Dict, Any
-
-# LoRa communication (requires pyLoRa library)
-try:
-    import pyLoRa
-    LORA_AVAILABLE = True
-except ImportError:
-    LORA_AVAILABLE = False
-    print("WARNING: LoRa library not available. LoRa features disabled.")
-
-# Enable OpenCV optimizations (uses NEON SIMD instructions on ARM if available)
-cv2.setUseOptimized(True)
+import base64
+from pathlib import Path
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('/tmp/drone_vision.log'),
+        logging.FileHandler('/tmp/vision_system.log'),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
-# Ensure OpenCV is using optimized code paths
-if cv2.useOptimized():
-    logger.info("OpenCV optimizations enabled (using hardware acceleration)")
-else:
-    logger.warning("OpenCV optimizations not available")
+# Enable OpenCV optimizations
+cv2.setUseOptimized(True)
+cv2.setNumThreads(4)  # Optimize for Raspberry Pi 4 cores
 
-# Set Raspberry Pi to performance mode (requires appropriate permissions)
-try:
-    os.system("echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null")
-    logger.info("Set CPU to performance mode")
+class SystemOptimizer:
+    """System optimization utilities for Raspberry Pi 4"""
     
-    # Reset to ondemand governor on exit
-    def reset_governor():
-        os.system("echo ondemand | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null")
-    
-    atexit.register(reset_governor)
-except:
-    logger.warning("Could not set CPU governor (may need sudo)")
-
-
-class StreamingConfig:
-    """Configuration class for streaming parameters"""
-    
-    # Main video stream (processed video)
-    MAIN_STREAM_PORT = 5000
-    RAW_STREAM_PORT = 5001
-    
-    # Control and telemetry
-    CONTROL_PORT = 8080
-    TELEMETRY_PORT = 8081
-    
-    # Stream quality settings
-    HIGH_QUALITY = {
-        'width': 1280, 'height': 720, 'fps': 30, 'bitrate': 2000000
-    }
-    MEDIUM_QUALITY = {
-        'width': 854, 'height': 480, 'fps': 25, 'bitrate': 1000000
-    }
-    LOW_QUALITY = {
-        'width': 640, 'height': 360, 'fps': 15, 'bitrate': 500000
-    }
-    
-    # Network settings
-    MAX_PACKET_SIZE = 1400  # MTU safe size
-    RETRY_ATTEMPTS = 3
-    HEARTBEAT_INTERVAL = 1.0
-    CONNECTION_TIMEOUT = 5.0
-
-
-class NetworkStreamManager:
-    """Professional network streaming manager with fail-safe mechanisms"""
-    
-    def __init__(self, config: StreamingConfig):
-        self.config = config
-        self.active_clients = {}
-        self.stream_sockets = {}
-        self.running = False
-        
-        # Streaming statistics
-        self.stats = {
-            'bytes_sent': 0,
-            'packets_sent': 0,
-            'failed_attempts': 0,
-            'active_connections': 0,
-            'last_heartbeat': time.time()
-        }
-        
-        # Quality adaptation
-        self.current_quality = config.MEDIUM_QUALITY
-        self.quality_history = deque(maxlen=10)
-        
-        # Threading
-        self.heartbeat_thread = None
-        self.stats_thread = None
-        
-    def initialize_sockets(self):
-        """Initialize UDP sockets for streaming"""
+    @staticmethod
+    def optimize_system():
+        """Apply system-level optimizations"""
         try:
-            # Main processed stream
-            self.stream_sockets['main'] = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.stream_sockets['main'].setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.stream_sockets['main'].setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024*1024)  # 1MB buffer
+            # Set CPU governor to performance
+            os.system("echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null 2>&1")
             
-            # Raw stream
-            self.stream_sockets['raw'] = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.stream_sockets['raw'].setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.stream_sockets['raw'].setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 512*1024)   # 512KB buffer
+            # Increase GPU memory split
+            os.system("sudo raspi-config nonint do_memory_split 128")
             
-            # Control socket (TCP for reliability)
-            self.control_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.control_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.control_socket.bind(('0.0.0.0', self.config.CONTROL_PORT))
-            self.control_socket.listen(5)
+            # Set process priority
+            os.nice(-10)
             
-            logger.info("Network sockets initialized successfully")
-            return True
+            # Bind to specific CPU cores
+            cores = "2-3" if os.cpu_count() >= 4 else "0-1"
+            os.system(f"taskset -cp {cores} {os.getpid()} > /dev/null 2>&1")
+            
+            logger.info("System optimizations applied successfully")
             
         except Exception as e:
-            logger.error(f"Failed to initialize sockets: {e}")
-            return False
+            logger.warning(f"Some optimizations failed: {e}")
     
-    def start_streaming(self):
-        """Start the streaming service"""
-        if not self.initialize_sockets():
-            return False
-            
-        self.running = True
-        
-        # Start heartbeat thread
-        self.heartbeat_thread = threading.Thread(target=self._heartbeat_worker, daemon=True)
-        self.heartbeat_thread.start()
-        
-        # Start statistics thread
-        self.stats_thread = threading.Thread(target=self._stats_worker, daemon=True)
-        self.stats_thread.start()
-        
-        # Start control server
-        self.control_thread = threading.Thread(target=self._control_server, daemon=True)
-        self.control_thread.start()
-        
-        logger.info("Streaming service started")
-        return True
-    
-    def stop_streaming(self):
-        """Stop streaming service gracefully"""
-        self.running = False
-        
-        # Close all sockets
-        for sock in self.stream_sockets.values():
-            try:
-                sock.close()
-            except:
-                pass
-                
+    @staticmethod
+    def cleanup():
+        """Reset system settings on exit"""
         try:
-            self.control_socket.close()
+            os.system("echo ondemand | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null 2>&1")
+            os.system("sudo pkill -f libcamera")
+            os.system("sudo pkill -f gst-launch")
+            os.system("sudo pkill -f ffmpeg")
         except:
             pass
-            
-        logger.info("Streaming service stopped")
+
+class H265RTCStreamer:
+    """High-performance H.265 RTC streaming for ground station communication"""
     
-    def send_frame(self, frame_data: bytes, stream_type: str, clients: list = None):
-        """Send frame data to clients with error handling"""
-        if not self.running or stream_type not in self.stream_sockets:
-            return False
-            
-        if clients is None:
-            clients = list(self.active_clients.keys())
-            
-        if not clients:
-            return False
-            
-        sock = self.stream_sockets[stream_type]
-        success_count = 0
+    def __init__(self, ground_station_ip="192.168.1.100", rtc_port=8000, websocket_port=8001):
+        self.ground_station_ip = ground_station_ip
+        self.rtc_port = rtc_port
+        self.websocket_port = websocket_port
+        self.streaming = False
+        self.encoder_process = None
+        self.websocket_server = None
+        self.connected_clients = set()
         
-        # Fragment large frames
-        fragments = self._fragment_data(frame_data)
-        
-        for client_addr in clients:
-            try:
-                for fragment in fragments:
-                    sock.sendto(fragment, client_addr)
-                    
-                success_count += 1
-                self.stats['packets_sent'] += len(fragments)
-                
-            except Exception as e:
-                logger.warning(f"Failed to send to client {client_addr}: {e}")
-                self.stats['failed_attempts'] += 1
-                self._handle_client_disconnect(client_addr)
-        
-        self.stats['bytes_sent'] += len(frame_data) * success_count
-        return success_count > 0
-    
-    def _fragment_data(self, data: bytes) -> list:
-        """Fragment large data into network-safe packets"""
-        if len(data) <= self.config.MAX_PACKET_SIZE:
-            return [data]
-            
-        fragments = []
-        fragment_id = int(time.time() * 1000) % 65536  # 16-bit fragment ID
-        total_fragments = (len(data) + self.config.MAX_PACKET_SIZE - 1) // self.config.MAX_PACKET_SIZE
-        
-        for i in range(total_fragments):
-            start = i * self.config.MAX_PACKET_SIZE
-            end = min(start + self.config.MAX_PACKET_SIZE, len(data))
-            
-            # Header: fragment_id (2 bytes) + fragment_num (2 bytes) + total_fragments (2 bytes)
-            header = struct.pack('!HHH', fragment_id, i, total_fragments)
-            fragment = header + data[start:end]
-            fragments.append(fragment)
-            
-        return fragments
-    
-    def _heartbeat_worker(self):
-        """Send periodic heartbeat to maintain connections"""
-        while self.running:
-            current_time = time.time()
-            heartbeat_data = json.dumps({
-                'type': 'heartbeat',
-                'timestamp': current_time,
-                'stats': self.stats
-            }).encode()
-            
-            # Send to all active clients
-            disconnected_clients = []
-            for client_addr in list(self.active_clients.keys()):
-                try:
-                    self.stream_sockets['main'].sendto(heartbeat_data, client_addr)
-                    
-                    # Check if client is responsive
-                    if current_time - self.active_clients[client_addr]['last_seen'] > self.config.CONNECTION_TIMEOUT:
-                        disconnected_clients.append(client_addr)
-                        
-                except:
-                    disconnected_clients.append(client_addr)
-            
-            # Remove disconnected clients
-            for client_addr in disconnected_clients:
-                self._handle_client_disconnect(client_addr)
-            
-            self.stats['last_heartbeat'] = current_time
-            time.sleep(self.config.HEARTBEAT_INTERVAL)
-    
-    def _stats_worker(self):
-        """Monitor and log streaming statistics"""
-        while self.running:
-            time.sleep(10)  # Log every 10 seconds
-            
-            logger.info(f"Streaming Stats - Active: {len(self.active_clients)}, "
-                       f"Sent: {self.stats['bytes_sent']/1024/1024:.1f}MB, "
-                       f"Packets: {self.stats['packets_sent']}, "
-                       f"Failed: {self.stats['failed_attempts']}")
-    
-    def _control_server(self):
-        """Handle control connections from clients"""
-        while self.running:
-            try:
-                client_sock, client_addr = self.control_socket.accept()
-                threading.Thread(
-                    target=self._handle_control_client, 
-                    args=(client_sock, client_addr),
-                    daemon=True
-                ).start()
-                
-            except:
-                if self.running:
-                    logger.error("Control server error")
-                    time.sleep(1)
-    
-    def _handle_control_client(self, client_sock, client_addr):
-        """Handle individual control client"""
-        logger.info(f"Control client connected: {client_addr}")
-        
-        try:
-            while self.running:
-                data = client_sock.recv(1024)
-                if not data:
-                    break
-                    
-                try:
-                    command = json.loads(data.decode())
-                    response = self._process_control_command(command, client_addr)
-                    client_sock.send(json.dumps(response).encode())
-                    
-                except json.JSONDecodeError:
-                    logger.warning(f"Invalid JSON from {client_addr}")
-                    
-        except Exception as e:
-            logger.warning(f"Control client {client_addr} error: {e}")
-        finally:
-            client_sock.close()
-            logger.info(f"Control client disconnected: {client_addr}")
-    
-    def _process_control_command(self, command: dict, client_addr) -> dict:
-        """Process control commands from clients"""
-        cmd_type = command.get('type', '')
-        
-        if cmd_type == 'register':
-            # Register client for streaming
-            stream_addr = (client_addr[0], command.get('stream_port', self.config.MAIN_STREAM_PORT))
-            self.active_clients[stream_addr] = {
-                'registered_at': time.time(),
-                'last_seen': time.time(),
-                'stream_type': command.get('stream_type', 'main'),
-                'quality': command.get('quality', 'medium')
-            }
-            logger.info(f"Client registered: {stream_addr}")
-            return {'status': 'success', 'message': 'Client registered'}
-            
-        elif cmd_type == 'unregister':
-            stream_addr = (client_addr[0], command.get('stream_port', self.config.MAIN_STREAM_PORT))
-            self._handle_client_disconnect(stream_addr)
-            return {'status': 'success', 'message': 'Client unregistered'}
-            
-        elif cmd_type == 'quality_change':
-            quality = command.get('quality', 'medium')
-            self._adapt_quality(quality)
-            return {'status': 'success', 'message': f'Quality changed to {quality}'}
-            
-        elif cmd_type == 'get_stats':
-            return {'status': 'success', 'stats': self.stats}
-            
-        else:
-            return {'status': 'error', 'message': 'Unknown command'}
-    
-    def _handle_client_disconnect(self, client_addr):
-        """Handle client disconnection"""
-        if client_addr in self.active_clients:
-            del self.active_clients[client_addr]
-            logger.info(f"Client disconnected: {client_addr}")
-            self.stats['active_connections'] = len(self.active_clients)
-    
-    def _adapt_quality(self, quality_level: str):
-        """Adapt streaming quality based on network conditions"""
-        quality_map = {
-            'high': self.config.HIGH_QUALITY,
-            'medium': self.config.MEDIUM_QUALITY,
-            'low': self.config.LOW_QUALITY
+        # H.265 encoding parameters optimized for Raspberry Pi 4
+        self.encoding_params = {
+            'preset': 'ultrafast',
+            'tune': 'zerolatency',
+            'crf': '23',
+            'maxrate': '2000k',
+            'bufsize': '4000k',
+            'keyint': '30',
+            'fps': '25'
         }
         
-        if quality_level in quality_map:
-            self.current_quality = quality_map[quality_level]
-            logger.info(f"Quality adapted to: {quality_level}")
-
-
-class LoRaTelemetry:
-    """LoRa communication for telemetry and low-bandwidth data"""
-    
-    def __init__(self, cs_pin=8, reset_pin=22, irq_pin=18):
-        self.lora = None
-        self.running = False
-        self.message_queue = queue.Queue(maxsize=100)
+        # Setup directories
+        self.setup_directories()
         
-        if LORA_AVAILABLE:
-            try:
-                self.lora = pyLoRa.LoRa(cs_pin, reset_pin, irq_pin)
-                self.lora.set_frequency(868.1)  # EU frequency
-                self.lora.set_bandwidth(125000)
-                self.lora.set_spreading_factor(7)
-                self.lora.set_coding_rate(5)
-                self.lora.set_sync_word(0x34)
-                logger.info("LoRa initialized successfully")
-            except Exception as e:
-                logger.error(f"LoRa initialization failed: {e}")
-                self.lora = None
-    
-    def start_telemetry(self):
-        """Start LoRa telemetry service"""
-        if not self.lora:
-            logger.warning("LoRa not available, telemetry disabled")
-            return False
-            
-        self.running = True
-        self.telemetry_thread = threading.Thread(target=self._telemetry_worker, daemon=True)
-        self.telemetry_thread.start()
-        logger.info("LoRa telemetry started")
-        return True
-    
-    def stop_telemetry(self):
-        """Stop LoRa telemetry service"""
-        self.running = False
-        if hasattr(self, 'telemetry_thread'):
-            self.telemetry_thread.join(timeout=1.0)
-        logger.info("LoRa telemetry stopped")
-    
-    def send_telemetry(self, data: dict):
-        """Queue telemetry data for LoRa transmission"""
-        if not self.running:
-            return False
-            
+    def setup_directories(self):
+        """Create necessary directories"""
+        Path("/tmp/vision_streams").mkdir(exist_ok=True)
+        Path("/tmp/vision_logs").mkdir(exist_ok=True)
+        
+    def start_h265_encoder(self, input_source="udp://127.0.0.1:5000"):
+        """Start H.265 encoder with hardware acceleration if available"""
+        
+        # Check for hardware encoder support
+        hw_encoder = "h264_v4l2m2m"  # Raspberry Pi hardware encoder
+        
+        # FFmpeg command with optimized H.265 encoding
+        cmd = [
+            'ffmpeg',
+            '-hide_banner',
+            '-loglevel', 'warning',
+            '-f', 'h264',
+            '-i', input_source,
+            '-c:v', 'libx265',
+            '-preset', self.encoding_params['preset'],
+            '-tune', self.encoding_params['tune'],
+            '-crf', self.encoding_params['crf'],
+            '-maxrate', self.encoding_params['maxrate'],
+            '-bufsize', self.encoding_params['bufsize'],
+            '-g', self.encoding_params['keyint'],
+            '-r', self.encoding_params['fps'],
+            '-pix_fmt', 'yuv420p',
+            '-f', 'mpegts',
+            f'udp://{self.ground_station_ip}:{self.rtc_port}'
+        ]
+        
         try:
-            # Compress telemetry data
-            compressed_data = json.dumps(data, separators=(',', ':'))
-            if len(compressed_data) > 200:  # LoRa packet size limit
-                # Send only critical data
-                critical_data = {
-                    'lat': data.get('latitude', 0),
-                    'lon': data.get('longitude', 0),
-                    'alt': data.get('altitude', 0),
-                    'bat': data.get('battery', 0),
-                    'sig': data.get('signal_strength', 0)
-                }
-                compressed_data = json.dumps(critical_data, separators=(',', ':'))
-            
-            self.message_queue.put(compressed_data, block=False)
+            self.encoder_process = subprocess.Popen(
+                cmd, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE,
+                bufsize=0
+            )
+            logger.info(f"H.265 encoder started, streaming to {self.ground_station_ip}:{self.rtc_port}")
             return True
             
-        except queue.Full:
-            logger.warning("LoRa telemetry queue full")
+        except Exception as e:
+            logger.error(f"Failed to start H.265 encoder: {e}")
             return False
     
-    def _telemetry_worker(self):
-        """LoRa telemetry transmission worker"""
-        while self.running:
-            try:
-                # Get message from queue with timeout
-                message = self.message_queue.get(timeout=1.0)
+    async def websocket_handler(self, websocket, path):
+        """Handle WebSocket connections for telemetry and control"""
+        self.connected_clients.add(websocket)
+        logger.info(f"Ground station connected via WebSocket: {websocket.remote_address}")
+        
+        try:
+            async for message in websocket:
+                data = json.loads(message)
+                await self.handle_ground_station_command(websocket, data)
                 
-                # Send via LoRa
-                if self.lora:
-                    self.lora.send(message.encode())
-                    logger.debug(f"LoRa telemetry sent: {len(message)} bytes")
-                    
-                time.sleep(0.1)  # Rate limiting
-                
-            except queue.Empty:
-                continue
-            except Exception as e:
-                logger.error(f"LoRa transmission error: {e}")
-                time.sleep(1)
-
-
-class EnhancedGstreamerCamera:
-    """Enhanced camera class with dual streaming support"""
+        except websockets.exceptions.ConnectionClosed:
+            logger.info("Ground station disconnected")
+        except Exception as e:
+            logger.error(f"WebSocket error: {e}")
+        finally:
+            self.connected_clients.discard(websocket)
     
-    def __init__(self, queue_size=2, enable_raw_stream=True):
-        # Kill any existing processes
-        os.system("sudo pkill -9 libcamera-vid")
-        os.system("sudo pkill -9 gst-launch-1.0")
+    async def handle_ground_station_command(self, websocket, data):
+        """Handle commands from ground station"""
+        command = data.get('command')
+        
+        if command == 'get_status':
+            status = {
+                'timestamp': datetime.now().isoformat(),
+                'streaming': self.streaming,
+                'encoder_running': self.encoder_process is not None and self.encoder_process.poll() is None,
+                'system_stats': self.get_system_stats()
+            }
+            await websocket.send(json.dumps(status))
+            
+        elif command == 'start_stream':
+            if not self.streaming:
+                self.start_streaming()
+            await websocket.send(json.dumps({'status': 'streaming_started'}))
+            
+        elif command == 'stop_stream':
+            if self.streaming:
+                self.stop_streaming()
+            await websocket.send(json.dumps({'status': 'streaming_stopped'}))
+            
+        elif command == 'adjust_quality':
+            quality = data.get('quality', 'medium')
+            self.adjust_stream_quality(quality)
+            await websocket.send(json.dumps({'status': f'quality_set_to_{quality}'}))
+    
+    def get_system_stats(self):
+        """Get system performance statistics"""
+        try:
+            # CPU temperature
+            temp = float(open('/sys/class/thermal/thermal_zone0/temp').read()) / 1000
+            
+            # Memory usage
+            with open('/proc/meminfo') as f:
+                meminfo = f.read()
+            
+            # CPU usage (simplified)
+            load_avg = os.getloadavg()[0]
+            
+            return {
+                'cpu_temp': round(temp, 1),
+                'cpu_load': round(load_avg, 2),
+                'timestamp': time.time()
+            }
+        except:
+            return {'error': 'stats_unavailable'}
+    
+    def adjust_stream_quality(self, quality):
+        """Dynamically adjust streaming quality"""
+        quality_presets = {
+            'low': {'crf': '28', 'maxrate': '1000k', 'bufsize': '2000k'},
+            'medium': {'crf': '23', 'maxrate': '2000k', 'bufsize': '4000k'},
+            'high': {'crf': '20', 'maxrate': '4000k', 'bufsize': '8000k'}
+        }
+        
+        if quality in quality_presets:
+            self.encoding_params.update(quality_presets[quality])
+            logger.info(f"Stream quality adjusted to {quality}")
+    
+    def start_websocket_server(self):
+        """Start WebSocket server for ground station communication"""
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            self.websocket_server = websockets.serve(
+                self.websocket_handler,
+                "0.0.0.0",
+                self.websocket_port
+            )
+            
+            loop.run_until_complete(self.websocket_server)
+            logger.info(f"WebSocket server started on port {self.websocket_port}")
+            loop.run_forever()
+            
+        except Exception as e:
+            logger.error(f"WebSocket server error: {e}")
+    
+    def start_streaming(self):
+        """Start the complete streaming pipeline"""
+        if not self.streaming:
+            self.streaming = True
+            
+            # Start WebSocket server in separate thread
+            websocket_thread = threading.Thread(
+                target=self.start_websocket_server,
+                daemon=True
+            )
+            websocket_thread.start()
+            
+            # Start H.265 encoder
+            self.start_h265_encoder()
+    
+    def stop_streaming(self):
+        """Stop streaming and cleanup"""
+        self.streaming = False
+        
+        if self.encoder_process:
+            try:
+                self.encoder_process.terminate()
+                self.encoder_process.wait(timeout=5)
+            except:
+                self.encoder_process.kill()
+        
+        logger.info("Streaming stopped")
+    
+    async def send_telemetry(self, data):
+        """Send telemetry data to connected ground stations"""
+        if self.connected_clients:
+            message = json.dumps({
+                'type': 'telemetry',
+                'data': data,
+                'timestamp': datetime.now().isoformat()
+            })
+            
+            # Send to all connected clients
+            disconnected = set()
+            for client in self.connected_clients:
+                try:
+                    await client.send(message)
+                except:
+                    disconnected.add(client)
+            
+            # Remove disconnected clients
+            self.connected_clients -= disconnected
+
+class OptimizedCamera:
+    """Optimized camera system using libcamera and hardware acceleration"""
+    
+    def __init__(self, width=1280, height=720, fps=25):
+        self.width = width
+        self.height = height
+        self.fps = fps
+        self.stream_process = None
+        self.cap = None
+        self.frame_queue = queue.Queue(maxsize=3)
+        self.running = False
+        self.capture_thread = None
+        
+        # Kill existing processes
+        self.cleanup_processes()
         time.sleep(1)
         
-        self.enable_raw_stream = enable_raw_stream
+        # Start camera pipeline
+        self.start_camera_pipeline()
         
-        # Start streaming processes
-        self.main_stream_process = self.start_main_stream()
-        if enable_raw_stream:
-            self.raw_stream_process = self.start_raw_stream()
+    def cleanup_processes(self):
+        """Clean up existing camera processes"""
+        os.system("sudo pkill -f libcamera-vid")
+        os.system("sudo pkill -f gst-launch-1.0")
         
-        # Create frame queues
-        self.main_queue = queue.Queue(maxsize=queue_size)
-        self.raw_queue = queue.Queue(maxsize=queue_size) if enable_raw_stream else None
+    def start_camera_pipeline(self):
+        """Start optimized libcamera pipeline"""
         
-        # Control flags
-        self.running = True
-        
-        # Open GStreamer pipelines
-        self.main_cap = self.receive_main_stream()
-        self.raw_cap = self.receive_raw_stream() if enable_raw_stream else None
-        
-        # Verify pipelines
-        if not self.main_cap.isOpened():
-            raise RuntimeError("Failed to open main GStreamer pipeline")
-        if enable_raw_stream and not self.raw_cap.isOpened():
-            logger.warning("Failed to open raw stream pipeline")
-            
-        # Start capture threads
-        self.main_thread = threading.Thread(target=self._update_main, daemon=True)
-        self.main_thread.start()
-        
-        if enable_raw_stream and self.raw_cap:
-            self.raw_thread = threading.Thread(target=self._update_raw, daemon=True)
-            self.raw_thread.start()
-    
-    def start_main_stream(self):
-        """Start main processed video stream"""
-        cmd = """
-        libcamera-vid -t 0 \
-        --nopreview \
-        --width 854 --height 480 \
-        --framerate 25 \
-        --shutter 20000 \
-        --gain 3 \
-        --denoise cdn_off \
-        --brightness 0.1 \
-        --contrast 1.2 \
-        --sharpness 1.5 \
-        --codec h264 \
-        --bitrate 1000000 \
+        # Libcamera command with hardware optimization
+        camera_cmd = f"""
+        libcamera-vid -t 0 --nopreview \
+        --width {self.width} --height {self.height} \
+        --framerate {self.fps} \
+        --codec h264 --profile baseline --level 4.0 \
+        --bitrate 8000000 \
+        --intra 30 \
         --inline \
+        --flush \
+        --shutter 8000 \
+        --gain 2.0 \
+        --awb auto \
+        --denoise cdn_hq \
+        --contrast 1.1 \
+        --brightness 0.05 \
+        --sharpness 1.2 \
         -o - | \
-        gst-launch-1.0 fdsrc ! queue ! h264parse ! rtph264pay config-interval=1 ! udpsink host=127.0.0.1 port=5100 sync=false
+        gst-launch-1.0 fdsrc ! queue ! h264parse ! \
+        rtph264pay config-interval=1 ! \
+        udpsink host=127.0.0.1 port=5000 sync=false
         """
-        return subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    
-    def start_raw_stream(self):
-        """Start raw video stream"""
-        cmd = """
-        libcamera-vid -t 0 \
-        --nopreview \
-        --width 640 --height 480 \
-        --framerate 15 \
-        --codec h264 \
-        --bitrate 500000 \
-        --inline \
-        -o - | \
-        gst-launch-1.0 fdsrc ! queue ! h264parse ! rtph264pay config-interval=1 ! udpsink host=127.0.0.1 port=5101 sync=false
-        """
-        return subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    
-    def receive_main_stream(self):
-        """Create GStreamer pipeline for main stream"""
-        pipeline = (
-            "udpsrc port=5100 ! "
-            "application/x-rtp,media=video,encoding-name=H264,payload=96 ! "
-            "rtpjitterbuffer latency=50 ! "
-            "rtph264depay ! h264parse ! avdec_h264 ! "
-            "videoconvert ! appsink sync=false emit-signals=true drop=true"
-        )
-        return cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
-    
-    def receive_raw_stream(self):
-        """Create GStreamer pipeline for raw stream"""
-        if not self.enable_raw_stream:
-            return None
+        
+        try:
+            self.stream_process = subprocess.Popen(
+                camera_cmd,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
             
-        pipeline = (
-            "udpsrc port=5101 ! "
-            "application/x-rtp,media=video,encoding-name=H264,payload=96 ! "
-            "rtpjitterbuffer latency=50 ! "
-            "rtph264depay ! h264parse ! avdec_h264 ! "
-            "videoconvert ! appsink sync=false emit-signals=true drop=true"
-        )
-        return cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+            # Give camera time to initialize
+            time.sleep(2)
+            
+            # Create GStreamer receiver
+            pipeline = (
+                "udpsrc port=5000 buffer-size=131072 ! "
+                "application/x-rtp,media=video,encoding-name=H264,payload=96 ! "
+                "rtpjitterbuffer latency=50 ! "
+                "rtph264depay ! h264parse ! avdec_h264 ! "
+                "videoconvert ! video/x-raw,format=BGR ! "
+                "appsink sync=false emit-signals=true drop=true max-buffers=1"
+            )
+            
+            self.cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+            
+            if not self.cap.isOpened():
+                raise RuntimeError("Failed to open camera pipeline")
+            
+            # Start capture thread
+            self.running = True
+            self.capture_thread = threading.Thread(target=self._capture_frames, daemon=True)
+            self.capture_thread.start()
+            
+            logger.info(f"Camera pipeline started: {self.width}x{self.height}@{self.fps}fps")
+            
+        except Exception as e:
+            logger.error(f"Failed to start camera: {e}")
+            raise
     
-    def _update_main(self):
-        """Main stream capture thread"""
+    def _capture_frames(self):
+        """Background thread for frame capture"""
         while self.running:
-            ret, frame = self.main_cap.read()
+            ret, frame = self.cap.read()
             if ret:
-                if self.main_queue.full():
+                # Drop old frames if queue is full
+                if self.frame_queue.full():
                     try:
-                        self.main_queue.get_nowait()
+                        self.frame_queue.get_nowait()
                     except queue.Empty:
                         pass
-                self.main_queue.put(frame)
+                
+                self.frame_queue.put(frame)
             else:
                 time.sleep(0.01)
     
-    def _update_raw(self):
-        """Raw stream capture thread"""
-        if not self.raw_cap:
-            return
-            
-        while self.running:
-            ret, frame = self.raw_cap.read()
-            if ret:
-                if self.raw_queue.full():
-                    try:
-                        self.raw_queue.get_nowait()
-                    except queue.Empty:
-                        pass
-                self.raw_queue.put(frame)
-            else:
-                time.sleep(0.01)
-    
-    def read_main(self):
-        """Read main processed frame"""
+    def read(self):
+        """Read frame from queue"""
         try:
-            frame = self.main_queue.get(timeout=1.0)
-            return True, frame
-        except queue.Empty:
-            return False, None
-    
-    def read_raw(self):
-        """Read raw frame"""
-        if not self.raw_queue:
-            return False, None
-            
-        try:
-            frame = self.raw_queue.get(timeout=1.0)
+            frame = self.frame_queue.get(timeout=0.5)
             return True, frame
         except queue.Empty:
             return False, None
     
     def release(self):
-        """Release all resources"""
+        """Release camera resources"""
         self.running = False
         
-        # Wait for threads
-        if hasattr(self, 'main_thread'):
-            self.main_thread.join(timeout=1.0)
-        if hasattr(self, 'raw_thread'):
-            self.raw_thread.join(timeout=1.0)
+        if self.capture_thread and self.capture_thread.is_alive():
+            self.capture_thread.join(timeout=2)
         
-        # Release captures
-        if self.main_cap:
-            self.main_cap.release()
-        if self.raw_cap:
-            self.raw_cap.release()
+        if self.cap:
+            self.cap.release()
         
-        # Terminate processes
-        for process in [getattr(self, 'main_stream_process', None), 
-                       getattr(self, 'raw_stream_process', None)]:
-            if process:
-                try:
-                    process.terminate()
-                    process.wait(timeout=2)
-                except:
-                    try:
-                        process.kill()
-                    except:
-                        pass
+        if self.stream_process:
+            try:
+                self.stream_process.terminate()
+                self.stream_process.wait(timeout=3)
+            except:
+                self.stream_process.kill()
         
-        # Clean up
-        os.system("sudo pkill -9 libcamera-vid")
-        os.system("sudo pkill -9 gst-launch-1.0")
+        self.cleanup_processes()
 
-
-class ShapeDetector:
-    """Enhanced shape detector with streaming integration"""
+class AdvancedShapeDetector:
+    """Advanced shape detection with professional computer vision algorithms"""
     
     def __init__(self):
-        # Original shape detection code (keeping all the optimizations)
-        self.red_lower1 = np.array([0, 100, 100], dtype=np.uint8)
-        self.red_upper1 = np.array([10, 255, 255], dtype=np.uint8)
-        self.red_lower2 = np.array([160, 100, 100], dtype=np.uint8)
-        self.red_upper2 = np.array([180, 255, 255], dtype=np.uint8)
-        self.blue_lower = np.array([100, 100, 100], dtype=np.uint8)
-        self.blue_upper = np.array([140, 255, 255], dtype=np.uint8)
+        # Initialize detection parameters
+        self.setup_detection_parameters()
         
-        self.min_contour_area = 7500
-        self.approx_polygon_epsilon = 0.015
-        self.kernel3 = np.ones((3, 3), np.uint8)
-        
-        self.hsv_buffer = None
-        self.red_mask = None
-        self.blue_mask = None
-        
-        self.fps_buffer = deque(maxlen=10)
-        self.prev_frame_time = 0
-        self.color_intensity_threshold = 0.4
+        # Performance monitoring
+        self.fps_counter = deque(maxlen=30)
+        self.processing_times = deque(maxlen=100)
         self.frame_count = 0
-        self.process_every_n_frames = 1
         
-        # Detection results for telemetry
-        self.latest_detections = []
+        # Detection results history
+        self.detection_history = deque(maxlen=50)
         
-    # Keep all original methods but add telemetry data collection
-    def preprocess_frame(self, frame):
-        if self.hsv_buffer is None or self.hsv_buffer.shape[:2] != frame.shape[:2]:
-            h, w = frame.shape[:2]
-            self.hsv_buffer = np.empty((h, w, 3), dtype=np.uint8)
-            self.red_mask = np.empty((h, w), dtype=np.uint8)
-            self.blue_mask = np.empty((h, w), dtype=np.uint8)
+        # Adaptive processing
+        self.adaptive_threshold = True
+        self.auto_exposure = True
         
-        blurred = cv2.medianBlur(frame, 3)
-        hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV, dst=self.hsv_buffer)
-        return hsv
-
-    def create_color_masks(self, hsv_frame):
-        red_mask1 = cv2.inRange(hsv_frame, self.red_lower1, self.red_upper1)
-        red_mask2 = cv2.inRange(hsv_frame, self.red_lower2, self.red_upper2)
-        cv2.bitwise_or(red_mask1, red_mask2, dst=self.red_mask)
+    def setup_detection_parameters(self):
+        """Setup optimized detection parameters"""
         
-        blue_mask = cv2.inRange(hsv_frame, self.blue_lower, self.blue_upper)
-        
-        cv2.dilate(self.red_mask, self.kernel3, dst=self.red_mask, iterations=1)
-        cv2.dilate(blue_mask, self.kernel3, dst=self.blue_mask, iterations=1)
-        
-        return self.red_mask, self.blue_mask
-
-    def detect_shapes(self, frame):
-        self.frame_count += 1
-        
-        if self.frame_count % self.process_every_n_frames != 0:
-            return self.latest_detections  # Return cached results
-        
-        hsv_frame = self.preprocess_frame(frame)
-        red_mask, blue_mask = self.create_color_masks(hsv_frame)
-        
-        frame_area = frame.shape[0] * frame.shape[1]
-        threshold_pixels = frame_area * self.color_intensity_threshold
-        
-        red_pixels = np.sum(red_mask == 255)
-        blue_pixels = np.sum(blue_mask == 255)
-        
-        red_close = red_pixels > threshold_pixels
-        blue_close = blue_pixels > threshold_pixels
-        
-        if red_close:
-            logger.info("Red shape detected - very close")
-        if blue_close:
-            logger.info("Blue shape detected - very close")
-        
-        red_shapes = self.process_contours(red_mask, frame, "red")
-        blue_shapes = self.process_contours(blue_mask, frame, "blue")
-        
-        self.latest_detections = red_shapes + blue_shapes
-        return self.latest_detections
-
-    def process_contours(self, mask, frame, color):
-        detected_shapes = []
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        if not contours:
-            return []
-        
-        if len(contours) > 5:
-            contours = sorted(contours, key=cv2.contourArea, reverse=True)[:5]
-        
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if area < self.min_contour_area:
-                continue
-            
-            peri = cv2.arcLength(contour, True)
-            approx = cv2.approxPolyDP(contour, self.approx_polygon_epsilon * peri, True)
-            corners = len(approx)
-            
-            shape_type = None
-            
-            if color == "red":
-                if corners == 3:
-                    shape_type = "triangle"
-                elif corners == 4:
-                    x, y, w, h = cv2.boundingRect(approx)
-                    aspect_ratio = float(w) / h
-                    if 0.7 <= aspect_ratio <= 1.3:
-                        shape_type = "square"
-            else:  # color == "blue"
-                if corners == 4:
-                    x, y, w, h = cv2.boundingRect(approx)
-                    aspect_ratio = float(w) / h
-                    if 0.7 <= aspect_ratio <= 1.3:
-                        shape_type = "square"
-                elif 5 <= corners <= 7:
-                    shape_type = "hexagon"
-            
-            if shape_type:
-                # Calculate centroid for telemetry
-                M = cv2.moments(contour)
-                if M["m00"] != 0:
-                    cx = int(M["m10"] / M["m00"])
-                    cy = int(M["m01"] / M["m00"])
-                    detected_shapes.append((contour, shape_type, color, (cx, cy), area))
-                
-        return detected_shapes
-
-    def draw_results(self, frame, shapes):
-        if not shapes:
-            return frame
-            
-        red_color = (0, 0, 255)
-        blue_color = (255, 0, 0)
-        white_color = (255, 255, 255)
-        
-        for shape_data in shapes:
-            contour, shape_type, color = shape_data[:3]
-            color_bgr = red_color if color == "red" else blue_color
-            cv2.drawContours(frame, [contour], -1, color_bgr, 2)
-            
-            if len(shape_data) >= 4:
-                cx, cy = shape_data[3]
-                label = f"{color} {shape_type}"
-                cv2.putText(frame, label, (cx - 20, cy), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, white_color, 1)
-        
-        return frame
-
-    def calculate_fps(self):
-        current_time = time.time()
-        delta_time = current_time - self.prev_frame_time
-        
-        if delta_time > 0.001:
-            fps = 1.0 / delta_time
-            self.fps_buffer.append(fps)
-            self.prev_frame_time = current_time
-        
-        if self.fps_buffer:
-            return np.mean(self.fps_buffer)
-        return 0
-
-    def process_frame(self, frame):
-        start_time = time.time()
-        fps = self.calculate_fps()
-        
-        shapes = self.detect_shapes(frame)
-        self.draw_results(frame, shapes)
-        
-        # Add system info to frame
-        cv2.putText(frame, f"FPS: {fps:.1f}", (10, 30), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-        cv2.putText(frame, f"Shapes: {len(shapes)}", (10, 50), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-        cv2.putText(frame, f"Time: {datetime.now().strftime('%H:%M:%S')}", (10, 70), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-        
-        # Dynamic frame processing adjustment
-        elapsed_time = time.time() - start_time
-        target_time = 1.0 / 20.0
-        
-        if elapsed_time > target_time:
-            self.process_every_n_frames = min(3, self.process_every_n_frames + 1)
-        elif elapsed_time < target_time * 0.7 and self.process_every_n_frames > 1:
-            self.process_every_n_frames -= 1
-            
-        return frame, shapes, fps
-
-    def get_telemetry_data(self, shapes, fps):
-        """Generate telemetry data from detection results"""
-        telemetry = {
-            'timestamp': time.time(),
-            'fps': fps,
-            'shape_count': len(shapes),
-            'shapes': []
+        # Color ranges in HSV (optimized for various lighting conditions)
+        self.color_ranges = {
+            'red': [
+                (np.array([0, 120, 70]), np.array([10, 255, 255])),
+                (np.array([170, 120, 70]), np.array([180, 255, 255]))
+            ],
+            'blue': [(np.array([100, 120, 70]), np.array([130, 255, 255]))],
+            'green': [(np.array([40, 120, 70]), np.array([80, 255, 255]))],
+            'yellow': [(np.array([20, 120, 70]), np.array([30, 255, 255]))]
         }
         
-        for shape_data in shapes:
-            if len(shape_data) >= 5:
-                _, shape_type, color, (cx, cy), area = shape_data
-                telemetry['shapes'].append({
-                    'type': shape_type,
-                    'color': color,
-                    'position': [cx, cy],
-                    'area': int(area)
-                })
+        # Detection thresholds
+        self.min_contour_area = 1000
+        self.max_contour_area = 50000
+        self.approx_epsilon = 0.02
         
-        return telemetry
-
-
-class DroneVisionSystem:
-    """Main drone vision system with professional streaming capabilities"""
+        # Morphological kernels
+        self.kernel_small = np.ones((3, 3), np.uint8)
+        self.kernel_medium = np.ones((5, 5), np.uint8)
+        
+        # Kalman filters for shape tracking
+        self.shape_trackers = {}
+        
+    def create_kalman_filter(self):
+        """Create Kalman filter for shape tracking"""
+        kf = cv2.KalmanFilter(4, 2)
+        kf.measurementMatrix = np.array([[1, 0, 0, 0],
+                                       [0, 1, 0, 0]], np.float32)
+        kf.transitionMatrix = np.array([[1, 0, 1, 0],
+                                      [0, 1, 0, 1],
+                                      [0, 0, 1, 0],
+                                      [0, 0, 0, 1]], np.float32)
+        kf.processNoiseCov = 0.03 * np.eye(4, dtype=np.float32)
+        return kf
     
-    def __init__(self):
-        self.config = StreamingConfig()
-        self.stream_manager = NetworkStreamManager(self.config)
-        self.lora_telemetry = LoRaTelemetry()
+    def preprocess_frame(self, frame):
+        """Advanced preprocessing with adaptive enhancement"""
+        
+        # Apply CLAHE for adaptive histogram equalization
+        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        l = clahe.apply(l)
+        
+        enhanced = cv2.merge([l, a, b])
+        enhanced = cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
+        
+        # Noise reduction
+        denoised = cv2.bilateralFilter(enhanced, 5, 75, 75)
+        
+        # Convert to HSV
+        hsv = cv2.cvtColor(denoised, cv2.COLOR_BGR2HSV)
+        
+        return hsv, enhanced
+    
+    def detect_shapes_advanced(self, frame):
+        """Advanced shape detection with multi-stage filtering"""
+        start_time = time.time()
+        
+        hsv, enhanced = self.preprocess_frame(frame)
+        detected_objects = []
+        
+        # Process each color
+        for color_name, ranges in self.color_ranges.items():
+            # Create combined mask for color
+            combined_mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+            
+            for lower, upper in ranges:
+                mask = cv2.inRange(hsv, lower, upper)
+                combined_mask = cv2.bitwise_or(combined_mask, mask)
+            
+            # Morphological operations
+            mask_cleaned = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, self.kernel_small)
+            mask_cleaned = cv2.morphologyEx(mask_cleaned, cv2.MORPH_CLOSE, self.kernel_medium)
+            
+            # Find contours
+            contours, _ = cv2.findContours(mask_cleaned, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            # Process contours
+            for contour in contours:
+                area = cv2.contourArea(contour)
+                
+                if self.min_contour_area < area < self.max_contour_area:
+                    # Shape analysis
+                    shape_info = self.analyze_shape(contour, color_name)
+                    if shape_info:
+                        detected_objects.append(shape_info)
+        
+        # Update processing time
+        processing_time = time.time() - start_time
+        self.processing_times.append(processing_time)
+        
+        return detected_objects
+    
+    def analyze_shape(self, contour, color):
+        """Detailed shape analysis and classification"""
+        
+        # Basic shape properties
+        area = cv2.contourArea(contour)
+        perimeter = cv2.arcLength(contour, True)
+        
+        if perimeter == 0:
+            return None
+        
+        # Approximate polygon
+        epsilon = self.approx_epsilon * perimeter
+        approx = cv2.approxPolyDP(contour, epsilon, True)
+        vertices = len(approx)
+        
+        # Bounding rectangle
+        x, y, w, h = cv2.boundingRect(contour)
+        aspect_ratio = float(w) / h
+        
+        # Moments for centroid
+        M = cv2.moments(contour)
+        if M["m00"] == 0:
+            return None
+            
+        cx = int(M["m10"] / M["m00"])
+        cy = int(M["m01"] / M["m00"])
+        
+        # Shape classification
+        shape_type = self.classify_shape(vertices, aspect_ratio, area, perimeter)
+        
+        # Calculate confidence
+        confidence = self.calculate_confidence(contour, shape_type)
+        
+        return {
+            'contour': contour,
+            'shape': shape_type,
+            'color': color,
+            'center': (cx, cy),
+            'area': area,
+            'vertices': vertices,
+            'aspect_ratio': aspect_ratio,
+            'confidence': confidence,
+            'timestamp': time.time()
+        }
+    
+    def classify_shape(self, vertices, aspect_ratio, area, perimeter):
+        """Advanced shape classification"""
+        
+        if vertices == 3:
+            return "triangle"
+        elif vertices == 4:
+            if 0.8 <= aspect_ratio <= 1.2:
+                return "square"
+            else:
+                return "rectangle"
+        elif vertices == 5:
+            return "pentagon"
+        elif vertices == 6:
+            return "hexagon"
+        elif vertices > 6:
+            # Check circularity for circles
+            circularity = 4 * np.pi * area / (perimeter * perimeter)
+            if circularity > 0.7:
+                return "circle"
+            else:
+                return "polygon"
+        else:
+            return "unknown"
+    
+    def calculate_confidence(self, contour, shape_type):
+        """Calculate detection confidence"""
+        
+        # Basic confidence based on contour properties
+        area = cv2.contourArea(contour)
+        perimeter = cv2.arcLength(contour, True)
+        
+        if perimeter == 0:
+            return 0.0
+        
+        # Circularity measure
+        circularity = 4 * np.pi * area / (perimeter * perimeter)
+        
+        # Solidity measure
+        hull = cv2.convexHull(contour)
+        hull_area = cv2.contourArea(hull)
+        solidity = area / hull_area if hull_area > 0 else 0
+        
+        # Combine measures for confidence
+        confidence = (circularity + solidity) / 2.0
+        return min(confidence, 1.0)
+    
+    def draw_professional_overlay(self, frame, detections):
+        """Draw professional overlay with telemetry information"""
+        
+        overlay = frame.copy()
+        
+        # Draw detection results
+        for detection in detections:
+            contour = detection['contour']
+            shape = detection['shape']
+            color = detection['color']
+            center = detection['center']
+            confidence = detection['confidence']
+            
+            # Color mapping
+            color_map = {
+                'red': (0, 0, 255),
+                'blue': (255, 0, 0),
+                'green': (0, 255, 0),
+                'yellow': (0, 255, 255)
+            }
+            
+            draw_color = color_map.get(color, (255, 255, 255))
+            
+            # Draw contour
+            cv2.drawContours(overlay, [contour], -1, draw_color, 2)
+            
+            # Draw center point
+            cv2.circle(overlay, center, 5, draw_color, -1)
+            
+            # Draw label with confidence
+            label = f"{color} {shape} ({confidence:.2f})"
+            label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+            
+            # Background for text
+            cv2.rectangle(overlay, 
+                         (center[0] - label_size[0]//2 - 5, center[1] - 25),
+                         (center[0] + label_size[0]//2 + 5, center[1] - 5),
+                         (0, 0, 0), -1)
+            
+            # Text
+            cv2.putText(overlay, label, 
+                       (center[0] - label_size[0]//2, center[1] - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, draw_color, 2)
+        
+        # Add telemetry information
+        self.draw_telemetry_overlay(overlay, detections)
+        
+        return overlay
+    
+    def draw_telemetry_overlay(self, frame, detections):
+        """Draw telemetry and system information overlay"""
+        
+        h, w = frame.shape[:2]
+        
+        # Calculate FPS
+        if self.processing_times:
+            avg_processing_time = np.mean(self.processing_times)
+            fps = 1.0 / avg_processing_time if avg_processing_time > 0 else 0
+        else:
+            fps = 0
+        
+        # System information
+        info_text = [
+            f"FPS: {fps:.1f}",
+            f"Detections: {len(detections)}",
+            f"Frame: {self.frame_count}",
+            f"Time: {datetime.now().strftime('%H:%M:%S')}"
+        ]
+        
+        # Draw information panel
+        panel_height = len(info_text) * 25 + 20
+        cv2.rectangle(frame, (10, 10), (200, panel_height), (0, 0, 0), -1)
+        cv2.rectangle(frame, (10, 10), (200, panel_height), (0, 255, 0), 2)
+        
+        for i, text in enumerate(info_text):
+            cv2.putText(frame, text, (20, 35 + i * 25),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        
+        # Detection statistics
+        if detections:
+            stats_text = [f"{d['color']} {d['shape']}" for d in detections]
+            
+            for i, text in enumerate(stats_text):
+                cv2.putText(frame, text, (w - 200, 30 + i * 20),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
+
+class VisionSystem:
+    """Main vision system integrating all components"""
+    
+    def __init__(self, ground_station_ip="192.168.1.100"):
+        self.ground_station_ip = ground_station_ip
+        
+        # Initialize components
         self.camera = None
-        self.detector = ShapeDetector()
+        self.detector = AdvancedShapeDetector()
+        self.streamer = H265RTCStreamer(ground_station_ip)
         
         # System state
         self.running = False
-        self.system_stats = {
-            'start_time': time.time(),
+        self.recording = False
+        
+        # Performance monitoring
+        self.stats = {
             'frames_processed': 0,
-            'detection_count': 0,
-            'stream_errors': 0
+            'detections_made': 0,
+            'start_time': time.time()
         }
         
-        # H.264 encoders for streaming
-        self.main_encoder = None
-        self.raw_encoder = None
-        
-        # Frame buffers for streaming
-        self.encoded_main_buffer = queue.Queue(maxsize=5)
-        self.encoded_raw_buffer = queue.Queue(maxsize=5)
-        
     def initialize_system(self):
-        """Initialize all system components"""
-        logger.info("Initializing Drone Vision System...")
+        """Initialize the complete vision system"""
         
+        logger.info("Initializing Professional Vision System...")
+        
+        # Apply system optimizations
+        SystemOptimizer.optimize_system()
+        
+        # Initialize camera
         try:
-            # Initialize camera
-            self.camera = EnhancedGstreamerCamera(enable_raw_stream=True)
-            logger.info("Camera initialized")
-            
-            # Initialize streaming
-            if not self.stream_manager.start_streaming():
-                raise RuntimeError("Failed to start streaming service")
-            logger.info("Streaming service started")
-            
-            # Initialize LoRa telemetry
-            self.lora_telemetry.start_telemetry()
-            logger.info("LoRa telemetry initialized")
-            
-            # Initialize H.264 encoders
-            self._initialize_encoders()
-            logger.info("Video encoders initialized")
-            
-            logger.info("Drone Vision System fully initialized")
-            return True
-            
+            self.camera = OptimizedCamera(width=1280, height=720, fps=25)
+            logger.info("Camera initialized successfully")
         except Exception as e:
-            logger.error(f"System initialization failed: {e}")
-            return False
+            logger.error(f"Camera initialization failed: {e}")
+            raise
+        
+        # Start streaming
+        self.streamer.start_streaming()
+        logger.info(f"RTC streaming started to {self.ground_station_ip}")
+        
+        # Register cleanup
+        atexit.register(self.cleanup)
+        
+        logger.info("Vision system initialization complete")
     
-    def _initialize_encoders(self):
-        """Initialize H.264 encoders for streaming"""
-        # Main stream encoder (processed video)
-        fourcc = cv2.VideoWriter_fourcc(*'H264')
+    def process_frame(self, frame):
+        """Process single frame through the vision pipeline"""
         
-        # We'll use GStreamer pipelines for encoding instead of OpenCV VideoWriter
-        # This provides better performance and streaming capabilities
+        # Detect shapes
+        detections = self.detector.detect_shapes_advanced(frame)
         
-        # Main encoder pipeline
-        self.main_encoder_pipeline = (
-            "appsrc ! videoconvert ! "
-            "x264enc bitrate=1000 speed-preset=ultrafast tune=zerolatency ! "
-            "h264parse ! rtph264pay config-interval=1 pt=96 ! "
-            "udpsink host=0.0.0.0 port=5002 sync=false"
-        )
+        # Draw professional overlay
+        result_frame = self.detector.draw_professional_overlay(frame, detections)
         
-        # Raw encoder pipeline  
-        self.raw_encoder_pipeline = (
-            "appsrc ! videoconvert ! "
-            "x264enc bitrate=500 speed-preset=ultrafast tune=zerolatency ! "
-            "h264parse ! rtph264pay config-interval=1 pt=96 ! "
-            "udpsink host=0.0.0.0 port=5003 sync=false"
-        )
+        # Update statistics
+        self.stats['frames_processed'] += 1
+        self.stats['detections_made'] += len(detections)
+        self.detector.frame_count += 1
         
-        # Create GStreamer writers
+        # Send telemetry to ground station
+        if detections:
+            telemetry = {
+                'detections': len(detections),
+                'objects': [
+                    {
+                        'shape': d['shape'],
+                        'color': d['color'],
+                        'position': d['center'],
+                        'confidence': d['confidence']
+                    }
+                    for d in detections
+                ],
+                'frame_id': self.detector.frame_count,
+                'timestamp': time.time()
+            }
+            
+            # Send via WebSocket (async)
+            asyncio.create_task(self.streamer.send_telemetry(telemetry))
+        
+        return result_frame, detections
+    
+    def run(self):
+        """Main system loop"""
+        
         try:
-            self.main_encoder = cv2.VideoWriter(
-                self.main_encoder_pipeline, 
-                cv2.CAP_GSTREAMER, 
-                0, 25.0, (854, 480), True
-            )
+            self.initialize_system()
+            self.running = True
             
-            self.raw_encoder = cv2.VideoWriter(
-                self.raw_encoder_pipeline,
-                cv2.CAP_GSTREAMER,
-                0, 15.0, (640, 480), True
-            )
+            logger.info("Professional Vision System Running...")
+            logger.info("Press 'q' to quit, 'r' to toggle recording")
             
-            if not self.main_encoder.isOpened():
-                logger.warning("Main encoder failed to open")
-            if not self.raw_encoder.isOpened():
-                logger.warning("Raw encoder failed to open")
+            while self.running:
+                # Read frame
+                ret, frame = self.camera.read()
                 
-        except Exception as e:
-            logger.error(f"Encoder initialization failed: {e}")
-    
-    def start_system(self):
-        """Start the main system loop"""
-        if not self.initialize_system():
-            return False
-            
-        self.running = True
-        logger.info("Starting main system loop...")
+                if not ret:
+                    logger.warning("Failed to read frame")
+                    time.sleep(0.1)
+                    continue
+                
+                # Process frame
+                result_frame, detections = self.process_frame(frame)
+                
+                # Display result
+                cv2.imshow('Professional Vision System', result_frame)
+                
+                # Handle keyboard input
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
+                    logger.info("Shutdown requested by user")
+                    break
+                elif key == ord('r'):
+                    self.toggle_recording()
+                elif key == ord('s'):
+                    self.save_detection_snapshot(result_frame, detections)
+                elif key == ord('c'):
+                    self.calibrate_colors(frame)
+                
+                # Adaptive frame rate control
+                if self.detector.processing_times:
+                    avg_time = np.mean(self.detector.processing_times)
+                    if avg_time > 0.05:  # If processing takes > 50ms
+                        time.sleep(0.01)  # Add small delay
         
-        # Start encoding threads
-        self.main_encoding_thread = threading.Thread(target=self._main_encoding_worker, daemon=True)
-        self.raw_encoding_thread = threading.Thread(target=self._raw_encoding_worker, daemon=True)
-        
-        self.main_encoding_thread.start()
-        self.raw_encoding_thread.start()
-        
-        # Main processing loop
-        try:
-            self._main_loop()
         except KeyboardInterrupt:
             logger.info("System interrupted by user")
         except Exception as e:
             logger.error(f"System error: {e}")
         finally:
-            self.stop_system()
+            self.cleanup()
+    
+    def toggle_recording(self):
+        """Toggle video recording"""
+        if not self.recording:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.recording_filename = f"/tmp/vision_streams/recording_{timestamp}.mp4"
             
-        return True
+            # Start recording with H.265
+            self.recording_process = subprocess.Popen([
+                'ffmpeg', '-y',
+                '-f', 'h264',
+                '-i', 'udp://127.0.0.1:5000',
+                '-c:v', 'libx265',
+                '-preset', 'medium',
+                '-crf', '23',
+                self.recording_filename
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            
+            self.recording = True
+            logger.info(f"Recording started: {self.recording_filename}")
+        else:
+            if hasattr(self, 'recording_process'):
+                self.recording_process.terminate()
+                self.recording_process.wait()
+            
+            self.recording = False
+            logger.info("Recording stopped")
     
-    def _main_loop(self):
-        """Main processing loop"""
-        last_telemetry_time = 0
-        telemetry_interval = 2.0  # Send telemetry every 2 seconds
+    def save_detection_snapshot(self, frame, detections):
+        """Save snapshot with detection data"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        while self.running:
-            try:
-                # Read frames from camera
-                ret_main, main_frame = self.camera.read_main()
-                ret_raw, raw_frame = self.camera.read_raw()
-                
-                if not ret_main:
-                    logger.warning("Failed to read main frame")
-                    time.sleep(0.01)
-                    continue
-                
-                # Process main frame (shape detection)
-                processed_frame, shapes, fps = self.detector.process_frame(main_frame.copy())
-                
-                # Update statistics
-                self.system_stats['frames_processed'] += 1
-                if shapes:
-                    self.system_stats['detection_count'] += len(shapes)
-                
-                # Queue frames for encoding
-                try:
-                    if self.encoded_main_buffer.full():
-                        self.encoded_main_buffer.get_nowait()  # Remove oldest
-                    self.encoded_main_buffer.put(processed_frame, block=False)
-                except queue.Full:
-                    pass
-                
-                if ret_raw and raw_frame is not None:
-                    try:
-                        if self.encoded_raw_buffer.full():
-                            self.encoded_raw_buffer.get_nowait()  # Remove oldest
-                        self.encoded_raw_buffer.put(raw_frame, block=False)
-                    except queue.Full:
-                        pass
-                
-                # Send telemetry via LoRa
-                current_time = time.time()
-                if current_time - last_telemetry_time > telemetry_interval:
-                    telemetry_data = self._generate_telemetry(shapes, fps)
-                    self.lora_telemetry.send_telemetry(telemetry_data)
-                    last_telemetry_time = current_time
-                
-                # Display local preview (optional)
-                if hasattr(self, 'show_preview') and self.show_preview:
-                    cv2.imshow('Drone Vision - Main', processed_frame)
-                    if ret_raw:
-                        cv2.imshow('Drone Vision - Raw', raw_frame)
-                    
-                    if cv2.waitKey(1) & 0xFF == ord('q'):
-                        break
-                
-                # Small delay to prevent CPU overload
-                time.sleep(0.001)
-                
-            except Exception as e:
-                logger.error(f"Main loop error: {e}")
-                self.system_stats['stream_errors'] += 1
-                time.sleep(0.1)
-    
-    def _main_encoding_worker(self):
-        """Worker thread for encoding and streaming main video"""
-        while self.running:
-            try:
-                frame = self.encoded_main_buffer.get(timeout=1.0)
-                
-                # Encode with GStreamer
-                if self.main_encoder and self.main_encoder.isOpened():
-                    self.main_encoder.write(frame)
-                
-                # Also create raw encoded data for UDP streaming
-                ret, encoded_data = cv2.imencode('.jpg', frame, 
-                    [cv2.IMWRITE_JPEG_QUALITY, 80])
-                
-                if ret:
-                    # Send to active clients
-                    clients = [addr for addr, info in self.stream_manager.active_clients.items() 
-                              if info.get('stream_type') == 'main']
-                    
-                    if clients:
-                        self.stream_manager.send_frame(encoded_data.tobytes(), 'main', clients)
-                
-            except queue.Empty:
-                continue
-            except Exception as e:
-                logger.error(f"Main encoding error: {e}")
-                time.sleep(0.1)
-    
-    def _raw_encoding_worker(self):
-        """Worker thread for encoding and streaming raw video"""
-        while self.running:
-            try:
-                frame = self.encoded_raw_buffer.get(timeout=1.0)
-                
-                # Encode with GStreamer
-                if self.raw_encoder and self.raw_encoder.isOpened():
-                    self.raw_encoder.write(frame)
-                
-                # Also create raw encoded data for UDP streaming
-                ret, encoded_data = cv2.imencode('.jpg', frame, 
-                    [cv2.IMWRITE_JPEG_QUALITY, 60])  # Lower quality for raw
-                
-                if ret:
-                    # Send to active clients
-                    clients = [addr for addr, info in self.stream_manager.active_clients.items() 
-                              if info.get('stream_type') == 'raw']
-                    
-                    if clients:
-                        self.stream_manager.send_frame(encoded_data.tobytes(), 'raw', clients)
-                
-            except queue.Empty:
-                continue
-            except Exception as e:
-                logger.error(f"Raw encoding error: {e}")
-                time.sleep(0.1)
-    
-    def _generate_telemetry(self, shapes, fps):
-        """Generate comprehensive telemetry data"""
-        current_time = time.time()
-        uptime = current_time - self.system_stats['start_time']
+        # Save image
+        image_path = f"/tmp/vision_streams/snapshot_{timestamp}.jpg"
+        cv2.imwrite(image_path, frame)
         
-        telemetry = {
-            'timestamp': current_time,
-            'uptime': uptime,
-            'system': {
-                'fps': fps,
-                'frames_processed': self.system_stats['frames_processed'],
-                'detection_count': self.system_stats['detection_count'],
-                'stream_errors': self.system_stats['stream_errors'],
-                'active_clients': len(self.stream_manager.active_clients),
-                'cpu_temp': self._get_cpu_temperature(),
-                'memory_usage': self._get_memory_usage()
-            },
-            'detections': self.detector.get_telemetry_data(shapes, fps),
-            'network': {
-                'bytes_sent': self.stream_manager.stats['bytes_sent'],
-                'packets_sent': self.stream_manager.stats['packets_sent'],
-                'failed_attempts': self.stream_manager.stats['failed_attempts']
+        # Save detection data
+        data_path = f"/tmp/vision_streams/snapshot_{timestamp}.json"
+        detection_data = {
+            'timestamp': timestamp,
+            'detections': [
+                {
+                    'shape': d['shape'],
+                    'color': d['color'],
+                    'center': d['center'],
+                    'area': d['area'],
+                    'confidence': d['confidence']
+                }
+                for d in detections
+            ],
+            'frame_stats': {
+                'processed_frames': self.stats['frames_processed'],
+                'total_detections': self.stats['detections_made']
             }
         }
         
-        return telemetry
+        with open(data_path, 'w') as f:
+            json.dump(detection_data, f, indent=2)
+        
+        logger.info(f"Snapshot saved: {image_path}")
     
-    def _get_cpu_temperature(self):
-        """Get Raspberry Pi CPU temperature"""
-        try:
-            with open('/sys/class/thermal/thermal_zone0/temp', 'r') as f:
-                temp = int(f.read().strip()) / 1000.0
-                return temp
-        except:
-            return 0.0
-    
-    def _get_memory_usage(self):
-        """Get system memory usage percentage"""
-        try:
-            with open('/proc/meminfo', 'r') as f:
-                lines = f.readlines()
+    def calibrate_colors(self, frame):
+        """Interactive color calibration"""
+        logger.info("Color calibration mode - click on objects to sample colors")
+        
+        def mouse_callback(event, x, y, flags, param):
+            if event == cv2.EVENT_LBUTTONDOWN:
+                # Get HSV value at clicked point
+                hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+                h, s, v = hsv[y, x]
+                logger.info(f"Color at ({x},{y}): H={h}, S={s}, V={v}")
                 
-            mem_total = 0
-            mem_available = 0
-            
-            for line in lines:
-                if line.startswith('MemTotal:'):
-                    mem_total = int(line.split()[1])
-                elif line.startswith('MemAvailable:'):
-                    mem_available = int(line.split()[1])
-            
-            if mem_total > 0:
-                usage = ((mem_total - mem_available) / mem_total) * 100
-                return round(usage, 1)
-        except:
-            pass
-        return 0.0
+                # Suggest color range
+                h_range = 10
+                s_range = 50
+                v_range = 50
+                
+                lower = np.array([max(0, h-h_range), max(0, s-s_range), max(0, v-v_range)])
+                upper = np.array([min(179, h+h_range), min(255, s+s_range), min(255, v+v_range)])
+                
+                logger.info(f"Suggested range - Lower: {lower}, Upper: {upper}")
+        
+        cv2.setMouseCallback('Professional Vision System', mouse_callback)
+        logger.info("Click on the display window to sample colors. Press any key to exit calibration.")
     
-    def stop_system(self):
-        """Stop all system components gracefully"""
-        logger.info("Stopping Drone Vision System...")
+    def get_system_performance(self):
+        """Get comprehensive system performance metrics"""
+        runtime = time.time() - self.stats['start_time']
+        
+        return {
+            'runtime_seconds': runtime,
+            'frames_processed': self.stats['frames_processed'],
+            'detections_made': self.stats['detections_made'],
+            'fps_average': self.stats['frames_processed'] / runtime if runtime > 0 else 0,
+            'detections_per_minute': (self.stats['detections_made'] / runtime) * 60 if runtime > 0 else 0,
+            'memory_usage': self.get_memory_usage(),
+            'cpu_temperature': self.get_cpu_temperature()
+        }
+    
+    def get_memory_usage(self):
+        """Get current memory usage"""
+        try:
+            with open('/proc/meminfo') as f:
+                lines = f.readlines()
+            
+            mem_total = int(lines[0].split()[1])
+            mem_available = int(lines[2].split()[1])
+            mem_used = mem_total - mem_available
+            
+            return {
+                'total_kb': mem_total,
+                'used_kb': mem_used,
+                'available_kb': mem_available,
+                'usage_percent': (mem_used / mem_total) * 100
+            }
+        except:
+            return {'error': 'unable_to_read_memory'}
+    
+    def get_cpu_temperature(self):
+        """Get CPU temperature"""
+        try:
+            with open('/sys/class/thermal/thermal_zone0/temp') as f:
+                temp = float(f.read()) / 1000.0
+            return temp
+        except:
+            return None
+    
+    def cleanup(self):
+        """Comprehensive system cleanup"""
+        logger.info("Cleaning up system resources...")
         
         self.running = False
         
-        # Stop streaming
-        self.stream_manager.stop_streaming()
-        
-        # Stop telemetry
-        self.lora_telemetry.stop_telemetry()
+        # Stop recording if active
+        if self.recording and hasattr(self, 'recording_process'):
+            try:
+                self.recording_process.terminate()
+                self.recording_process.wait(timeout=5)
+            except:
+                self.recording_process.kill()
         
         # Release camera
         if self.camera:
             self.camera.release()
         
-        # Close encoders
-        if self.main_encoder:
-            self.main_encoder.release()
-        if self.raw_encoder:
-            self.raw_encoder.release()
+        # Stop streaming
+        if self.streamer:
+            self.streamer.stop_streaming()
         
         # Close OpenCV windows
         cv2.destroyAllWindows()
         
-        # Clean up processes
-        os.system("sudo pkill -9 libcamera-vid")
-        os.system("sudo pkill -9 gst-launch-1.0")
+        # System cleanup
+        SystemOptimizer.cleanup()
         
-        logger.info("Drone Vision System stopped")
+        # Print final performance statistics
+        performance = self.get_system_performance()
+        logger.info("Final Performance Statistics:")
+        logger.info(f"  Runtime: {performance['runtime_seconds']:.1f} seconds")
+        logger.info(f"  Frames Processed: {performance['frames_processed']}")
+        logger.info(f"  Total Detections: {performance['detections_made']}")
+        logger.info(f"  Average FPS: {performance['fps_average']:.1f}")
+        logger.info(f"  Detections/min: {performance['detections_per_minute']:.1f}")
+        
+        logger.info("Professional Vision System shutdown complete")
 
 
-def setup_signal_handlers():
-    """Set up signal handlers for graceful shutdown"""
+def setup_signal_handlers(vision_system):
+    """Setup signal handlers for graceful shutdown"""
     def signal_handler(sig, frame):
-        logger.info("Received signal to terminate. Cleaning up...")
-        os.system("sudo pkill -9 libcamera-vid")
-        os.system("sudo pkill -9 gst-launch-1.0")
-        import sys
+        logger.info(f"Received signal {sig}, initiating graceful shutdown...")
+        if vision_system:
+            vision_system.running = False
+            vision_system.cleanup()
         sys.exit(0)
     
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
 
-def main():
-    """Main function for drone vision system"""
-    setup_signal_handlers()
+def check_system_requirements():
+    """Check system requirements and dependencies"""
     
-    # Set process priority
-    try:
-        os.nice(-10)
-        logger.info("Process priority increased")
-    except:
-        logger.warning("Could not set process priority")
+    logger.info("Checking system requirements...")
     
-    # Set CPU affinity
-    try:
-        cores = "2-3" if os.cpu_count() >= 4 else "0-1"
-        os.system(f"taskset -cp {cores} {os.getpid()} > /dev/null")
-        logger.info(f"Process bound to CPU cores {cores}")
-    except:
-        logger.warning("Could not set CPU affinity")
+    # Check required modules
+    required_modules = [
+        'cv2', 'numpy', 'websockets', 'asyncio'
+    ]
     
-    # Clean up any existing processes
-    os.system("sudo pkill -9 libcamera-vid")
-    os.system("sudo pkill -9 gst-launch-1.0")
-    time.sleep(1)
-    
-    # Create and start the drone vision system
-    try:
-        drone_system = DroneVisionSystem()
-        
-        # Enable preview for debugging (set to False for headless operation)
-        drone_system.show_preview = True
-        
-        logger.info("=== Professional Drone Vision System Starting ===")
-        logger.info(f"Main Stream Port: {StreamingConfig.MAIN_STREAM_PORT}")
-        logger.info(f"Raw Stream Port: {StreamingConfig.RAW_STREAM_PORT}")
-        logger.info(f"Control Port: {StreamingConfig.CONTROL_PORT}")
-        logger.info(f"H.264 Main Stream: udp://0.0.0.0:5002")
-        logger.info(f"H.264 Raw Stream: udp://0.0.0.0:5003")
-        
-        if not drone_system.start_system():
-            logger.error("Failed to start drone vision system")
-            return 1
-            
-    except KeyboardInterrupt:
-        logger.info("System interrupted by user")
-    except Exception as e:
-        logger.error(f"System error: {e}")
-        return 1
-    
-    return 0
-
-
-if __name__ == "__main__":
-    # Check dependencies
-    import sys
-    required_modules = ['cv2', 'numpy', 'subprocess', 'websockets']
     missing_modules = []
-    
     for module in required_modules:
         try:
             __import__(module)
         except ImportError:
-            if module != 'websockets':  # websockets is optional
-                missing_modules.append(module)
+            missing_modules.append(module)
     
     if missing_modules:
-        print(f"ERROR: Missing required modules: {', '.join(missing_modules)}")
-        print("Install with: pip install " + ' '.join(missing_modules))
-        sys.exit(1)
+        logger.error(f"Missing required modules: {', '.join(missing_modules)}")
+        logger.error("Install with: pip install opencv-python numpy websockets")
+        return False
     
-    # Check GStreamer support
-    if not cv2.getBuildInformation().find('GStreamer') != -1:
-        print("WARNING: OpenCV was not built with GStreamer support.")
+    # Check OpenCV build
+    build_info = cv2.getBuildInformation()
     
-    # Start system
+    if 'GStreamer' not in build_info:
+        logger.warning("OpenCV not built with GStreamer support")
+        logger.warning("Some features may not work correctly")
+    
+    if 'OpenCL' in build_info:
+        logger.info("OpenCL support detected - hardware acceleration available")
+    
+    # Check hardware
+    if os.path.exists('/opt/vc/bin/vcgencmd'):
+        logger.info("Raspberry Pi hardware detected")
+    else:
+        logger.warning("Not running on Raspberry Pi - some optimizations may not work")
+    
+    # Check available commands
+    required_commands = ['ffmpeg', 'libcamera-vid', 'gst-launch-1.0']
+    missing_commands = []
+    
+    for cmd in required_commands:
+        try:
+            subprocess.run(['which', cmd], check=True, capture_output=True)
+        except subprocess.CalledProcessError:
+            missing_commands.append(cmd)
+    
+    if missing_commands:
+        logger.error(f"Missing required commands: {', '.join(missing_commands)}")
+        logger.error("Install with: sudo apt install ffmpeg gstreamer1.0-tools")
+        return False
+    
+    logger.info("All system requirements satisfied")
+    return True
+
+
+def main():
+    """Main function"""
+    
+    print("=" * 60)
+    print("  PROFESSIONAL RASPBERRY PI 4 VISION SYSTEM")
+    print("  H.265 RTC Streaming & Advanced Computer Vision")
+    print("  Ground Station Communication Platform")
+    print("=" * 60)
+    print()
+    
+    # Check system requirements
+    if not check_system_requirements():
+        logger.error("System requirements not met. Exiting.")
+        return 1
+    
+    # Get ground station IP from command line or use default
+    ground_station_ip = sys.argv[1] if len(sys.argv) > 1 else "192.168.1.100"
+    
+    logger.info(f"Ground station IP: {ground_station_ip}")
+    
+    # Initialize vision system
+    vision_system = VisionSystem(ground_station_ip)
+    
+    # Setup signal handlers
+    setup_signal_handlers(vision_system)
+    
+    try:
+        # Run the system
+        vision_system.run()
+        return 0
+        
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
+        return 1
+
+
+if __name__ == "__main__":
     sys.exit(main())
