@@ -6,6 +6,9 @@ import threading
 import queue
 import os
 import atexit
+import math
+from dataclasses import dataclass
+from typing import List, Optional, Tuple, Dict
 
 # Enable OpenCV optimizations (uses NEON SIMD instructions on ARM if available)
 cv2.setUseOptimized(True)
@@ -28,6 +31,254 @@ try:
     atexit.register(reset_governor)
 except:
     print("Could not set CPU governor (may need sudo)")
+
+
+@dataclass
+class TrackedObject:
+    """Data class to store tracked object information."""
+    id: int
+    shape_type: str
+    color: str
+    center: Tuple[int, int]
+    contour: np.ndarray
+    area: float
+    last_seen: float
+    track_history: deque
+    confidence: float = 1.0
+    tracking_state: str = "active"  # active, lost, recovered
+    lost_frames: int = 0
+    
+    def update_position(self, new_center: Tuple[int, int], new_contour: np.ndarray, new_area: float):
+        """Update object position and tracking history."""
+        self.center = new_center
+        self.contour = new_contour
+        self.area = new_area
+        self.last_seen = time.time()
+        self.track_history.append(new_center)
+        self.lost_frames = 0
+        self.tracking_state = "recovered" if self.tracking_state == "lost" else "active"
+        
+        # Update confidence based on tracking consistency
+        if len(self.track_history) >= 2:
+            # Calculate movement consistency
+            recent_moves = list(self.track_history)[-3:]
+            if len(recent_moves) >= 2:
+                distances = [math.sqrt((recent_moves[i+1][0] - recent_moves[i][0])**2 + 
+                                     (recent_moves[i+1][1] - recent_moves[i][1])**2) 
+                           for i in range(len(recent_moves)-1)]
+                avg_distance = np.mean(distances)
+                # Higher confidence for consistent movement
+                self.confidence = min(1.0, self.confidence + 0.1) if avg_distance < 50 else max(0.3, self.confidence - 0.05)
+    
+    def mark_as_lost(self):
+        """Mark object as lost and increment lost frames counter."""
+        self.lost_frames += 1
+        self.tracking_state = "lost"
+        self.confidence = max(0.1, self.confidence - 0.1)
+
+
+class ObjectTracker:
+    """Advanced object tracker with fail-safe mechanisms."""
+    
+    def __init__(self, max_disappeared_frames=30, max_tracking_distance=100):
+        self.next_object_id = 0
+        self.tracked_objects: Dict[int, TrackedObject] = {}
+        self.max_disappeared_frames = max_disappeared_frames
+        self.max_tracking_distance = max_tracking_distance
+        self.tracking_history_size = 10
+        
+        # Kalman filter parameters for prediction
+        self.enable_prediction = True
+        self.kalman_filters = {}
+        
+    def create_kalman_filter(self):
+        """Create a Kalman filter for position prediction."""
+        kalman = cv2.KalmanFilter(4, 2)  # 4 state variables (x, y, vx, vy), 2 measurements (x, y)
+        kalman.measurementMatrix = np.array([[1, 0, 0, 0],
+                                           [0, 1, 0, 0]], np.float32)
+        kalman.transitionMatrix = np.array([[1, 0, 1, 0],
+                                          [0, 1, 0, 1],
+                                          [0, 0, 1, 0],
+                                          [0, 0, 0, 1]], np.float32)
+        kalman.processNoiseCov = 0.03 * np.eye(4, dtype=np.float32)
+        kalman.measurementNoiseCov = 0.1 * np.eye(2, dtype=np.float32)
+        return kalman
+    
+    def predict_position(self, obj_id: int) -> Optional[Tuple[int, int]]:
+        """Predict next position using Kalman filter."""
+        if not self.enable_prediction or obj_id not in self.kalman_filters:
+            return None
+            
+        kalman = self.kalman_filters[obj_id]
+        prediction = kalman.predict()
+        return (int(prediction[0]), int(prediction[1]))
+    
+    def update_kalman(self, obj_id: int, position: Tuple[int, int]):
+        """Update Kalman filter with new position."""
+        if obj_id not in self.kalman_filters:
+            self.kalman_filters[obj_id] = self.create_kalman_filter()
+            # Initialize with first position
+            kalman = self.kalman_filters[obj_id]
+            kalman.statePre = np.array([position[0], position[1], 0, 0], dtype=np.float32)
+            kalman.statePost = np.array([position[0], position[1], 0, 0], dtype=np.float32)
+        
+        kalman = self.kalman_filters[obj_id]
+        measurement = np.array([[position[0]], [position[1]]], dtype=np.float32)
+        kalman.correct(measurement)
+    
+    def calculate_distance(self, point1: Tuple[int, int], point2: Tuple[int, int]) -> float:
+        """Calculate Euclidean distance between two points."""
+        return math.sqrt((point1[0] - point2[0])**2 + (point1[1] - point2[1])**2)
+    
+    def calculate_shape_similarity(self, contour1: np.ndarray, contour2: np.ndarray) -> float:
+        """Calculate shape similarity using Hu moments."""
+        try:
+            # Calculate Hu moments for both contours
+            moments1 = cv2.moments(contour1)
+            moments2 = cv2.moments(contour2)
+            
+            if moments1['m00'] == 0 or moments2['m00'] == 0:
+                return 0.0
+                
+            hu1 = cv2.HuMoments(moments1).flatten()
+            hu2 = cv2.HuMoments(moments2).flatten()
+            
+            # Calculate similarity (lower is more similar)
+            similarity = cv2.matchShapes(contour1, contour2, cv2.CONTOURS_MATCH_I1, 0)
+            return max(0.0, 1.0 - similarity)  # Convert to similarity score (0-1)
+        except:
+            return 0.0
+    
+    def match_detections(self, detected_shapes: List[Tuple]) -> Dict[int, Tuple]:
+        """Match detected shapes with existing tracked objects."""
+        if not detected_shapes:
+            return {}
+            
+        matches = {}
+        unmatched_detections = list(range(len(detected_shapes)))
+        
+        # For each tracked object, find the best matching detection
+        for obj_id, tracked_obj in self.tracked_objects.items():
+            if tracked_obj.tracking_state == "lost" and tracked_obj.lost_frames > self.max_disappeared_frames:
+                continue
+                
+            best_match_idx = None
+            best_score = 0.0
+            
+            # Predict position if object was lost
+            predicted_pos = None
+            if tracked_obj.tracking_state == "lost" and self.enable_prediction:
+                predicted_pos = self.predict_position(obj_id)
+            
+            for idx in unmatched_detections:
+                contour, shape_type, color = detected_shapes[idx]
+                
+                # Calculate center of detected shape
+                M = cv2.moments(contour)
+                if M["m00"] == 0:
+                    continue
+                    
+                center = (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
+                area = cv2.contourArea(contour)
+                
+                # Check color and shape type match
+                if tracked_obj.color != color or tracked_obj.shape_type != shape_type:
+                    continue
+                
+                # Calculate position distance
+                reference_pos = predicted_pos if predicted_pos else tracked_obj.center
+                position_distance = self.calculate_distance(center, reference_pos)
+                
+                if position_distance > self.max_tracking_distance:
+                    continue
+                
+                # Calculate shape similarity
+                shape_similarity = self.calculate_shape_similarity(tracked_obj.contour, contour)
+                
+                # Calculate area similarity
+                area_ratio = min(area, tracked_obj.area) / max(area, tracked_obj.area)
+                
+                # Combined matching score
+                position_score = max(0, 1.0 - position_distance / self.max_tracking_distance)
+                combined_score = (position_score * 0.6 + shape_similarity * 0.2 + area_ratio * 0.2)
+                
+                if combined_score > best_score and combined_score > 0.3:  # Minimum threshold
+                    best_score = combined_score
+                    best_match_idx = idx
+            
+            if best_match_idx is not None:
+                matches[obj_id] = detected_shapes[best_match_idx]
+                unmatched_detections.remove(best_match_idx)
+        
+        return matches
+    
+    def update(self, detected_shapes: List[Tuple]) -> List[TrackedObject]:
+        """Update tracker with new detections."""
+        current_time = time.time()
+        
+        # Match detections with existing tracked objects
+        matches = self.match_detections(detected_shapes)
+        
+        # Update matched objects
+        for obj_id, (contour, shape_type, color) in matches.items():
+            M = cv2.moments(contour)
+            if M["m00"] != 0:
+                center = (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
+                area = cv2.contourArea(contour)
+                
+                self.tracked_objects[obj_id].update_position(center, contour, area)
+                self.update_kalman(obj_id, center)
+        
+        # Mark unmatched tracked objects as lost
+        matched_ids = set(matches.keys())
+        for obj_id in self.tracked_objects:
+            if obj_id not in matched_ids:
+                self.tracked_objects[obj_id].mark_as_lost()
+        
+        # Create new tracked objects for unmatched detections
+        matched_detection_indices = set()
+        for contour, shape_type, color in matches.values():
+            for i, (det_contour, det_shape, det_color) in enumerate(detected_shapes):
+                if (np.array_equal(contour, det_contour) and 
+                    shape_type == det_shape and color == det_color):
+                    matched_detection_indices.add(i)
+                    break
+        
+        for i, (contour, shape_type, color) in enumerate(detected_shapes):
+            if i not in matched_detection_indices:
+                M = cv2.moments(contour)
+                if M["m00"] != 0:
+                    center = (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
+                    area = cv2.contourArea(contour)
+                    
+                    new_obj = TrackedObject(
+                        id=self.next_object_id,
+                        shape_type=shape_type,
+                        color=color,
+                        center=center,
+                        contour=contour,
+                        area=area,
+                        last_seen=current_time,
+                        track_history=deque(maxlen=self.tracking_history_size)
+                    )
+                    new_obj.track_history.append(center)
+                    
+                    self.tracked_objects[self.next_object_id] = new_obj
+                    self.update_kalman(self.next_object_id, center)
+                    self.next_object_id += 1
+        
+        # Remove objects that have been lost for too long
+        objects_to_remove = []
+        for obj_id, obj in self.tracked_objects.items():
+            if obj.lost_frames > self.max_disappeared_frames:
+                objects_to_remove.append(obj_id)
+        
+        for obj_id in objects_to_remove:
+            del self.tracked_objects[obj_id]
+            if obj_id in self.kalman_filters:
+                del self.kalman_filters[obj_id]
+        
+        return list(self.tracked_objects.values())
 
 
 class AsyncVideoCapture:
@@ -129,6 +380,9 @@ class ShapeDetector:
         # Skip frames counter (for periodic processing)
         self.frame_count = 0
         self.process_every_n_frames = 1  # Process every frame by default
+        
+        # Initialize object tracker
+        self.tracker = ObjectTracker(max_disappeared_frames=30, max_tracking_distance=100)
 
     def preprocess_frame(self, frame):
         """Apply optimized preprocessing for Raspberry Pi."""
@@ -265,31 +519,73 @@ class ShapeDetector:
                 
         return detected_shapes
 
-    def draw_results(self, frame, shapes):
-        """Draw detected shapes efficiently."""
-        if not shapes:  # Early return if no shapes
+    def draw_results(self, frame, tracked_objects: List[TrackedObject]):
+        """Draw tracked objects with enhanced visualization."""
+        if not tracked_objects:  # Early return if no objects
             return frame
             
         # Prepare colors in advance (avoid repeated creation)
         red_color = (0, 0, 255)  # BGR format
         blue_color = (255, 0, 0)
         white_color = (255, 255, 255)
+        yellow_color = (0, 255, 255)
+        green_color = (0, 255, 0)
+        orange_color = (0, 165, 255)
         
-        for contour, shape_type, color in shapes:
-            # Draw contour (inplace operation)
-            color_bgr = red_color if color == "red" else blue_color
-            cv2.drawContours(frame, [contour], -1, color_bgr, 2)
+        for obj in tracked_objects:
+            # Choose color based on object color and tracking state
+            if obj.color == "red":
+                base_color = red_color
+            else:
+                base_color = blue_color
             
-            # Only calculate moments if needed for label positioning
-            M = cv2.moments(contour)
-            if M["m00"] != 0:
-                cx = int(M["m10"] / M["m00"])
-                cy = int(M["m01"] / M["m00"])
-                
-                # Draw label (smaller font size for performance)
-                label = f"{color} {shape_type}"
-                cv2.putText(frame, label, (cx - 20, cy), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, white_color, 1)
+            # Modify color based on tracking state
+            if obj.tracking_state == "lost":
+                draw_color = orange_color
+                thickness = 1
+            elif obj.tracking_state == "recovered":
+                draw_color = green_color
+                thickness = 3
+            else:
+                draw_color = base_color
+                thickness = 2
+            
+            # Draw contour
+            cv2.drawContours(frame, [obj.contour], -1, draw_color, thickness)
+            
+            # Draw center point
+            cv2.circle(frame, obj.center, 5, draw_color, -1)
+            
+            # Draw tracking history (trajectory)
+            if len(obj.track_history) > 1:
+                points = list(obj.track_history)
+                for i in range(1, len(points)):
+                    cv2.line(frame, points[i-1], points[i], yellow_color, 1)
+            
+            # Draw object ID and info
+            label = f"ID:{obj.id} {obj.color} {obj.shape_type}"
+            
+            # Add tracking state info
+            if obj.tracking_state == "lost":
+                label += f" (LOST:{obj.lost_frames})"
+            elif obj.tracking_state == "recovered":
+                label += " (RECOVERED)"
+            
+            # Add confidence score
+            label += f" C:{obj.confidence:.2f}"
+            
+            # Position label above the object
+            label_pos = (obj.center[0] - 40, obj.center[1] - 20)
+            
+            # Draw label background for better visibility
+            label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)[0]
+            cv2.rectangle(frame, 
+                         (label_pos[0] - 2, label_pos[1] - label_size[1] - 2),
+                         (label_pos[0] + label_size[0] + 2, label_pos[1] + 2),
+                         (0, 0, 0), -1)
+            
+            cv2.putText(frame, label, label_pos, 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, white_color, 1)
         
         return frame
 
@@ -310,7 +606,7 @@ class ShapeDetector:
         return 0
 
     def process_frame(self, frame):
-        """Process a single frame with adaptive frame skipping for consistent FPS."""
+        """Process a single frame with object tracking and fail-safe mechanisms."""
         # Measure time to dynamically adjust frame skipping
         start_time = time.time()
         
@@ -318,14 +614,26 @@ class ShapeDetector:
         fps = self.calculate_fps()
         
         # Detect shapes
-        shapes = self.detect_shapes(frame)
+        detected_shapes = self.detect_shapes(frame)
         
-        # Draw results (modify frame in-place)
-        self.draw_results(frame, shapes)
+        # Update tracker with new detections
+        tracked_objects = self.tracker.update(detected_shapes)
         
-        # Add FPS counter
+        # Draw tracking results (modify frame in-place)
+        self.draw_results(frame, tracked_objects)
+        
+        # Add FPS counter and tracking info
         cv2.putText(frame, f"FPS: {fps:.1f}", (10, 30), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        
+        # Add tracking statistics
+        active_count = sum(1 for obj in tracked_objects if obj.tracking_state == "active")
+        lost_count = sum(1 for obj in tracked_objects if obj.tracking_state == "lost")
+        recovered_count = sum(1 for obj in tracked_objects if obj.tracking_state == "recovered")
+        
+        tracking_info = f"Active:{active_count} Lost:{lost_count} Recovered:{recovered_count}"
+        cv2.putText(frame, tracking_info, (10, 50), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
         
         # Dynamically adjust frame processing rate based on performance
         elapsed_time = time.time() - start_time
@@ -339,7 +647,6 @@ class ShapeDetector:
             self.process_every_n_frames -= 1
             
         return frame
-
 
 def main():
     """Main function optimized for Raspberry Pi performance."""
