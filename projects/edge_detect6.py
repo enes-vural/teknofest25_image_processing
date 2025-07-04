@@ -7,6 +7,7 @@ import queue
 import os
 import atexit
 
+position_history = deque(maxlen=30)
 # Enable OpenCV optimizations (uses NEON SIMD instructions on ARM if available)
 cv2.setUseOptimized(True)
 
@@ -29,7 +30,246 @@ try:
 except:
     print("Could not set CPU governor (may need sudo)")
 
+class KalmanTracker:
+    def __init__(self):
+        # Kalman Filter oluştur
+        self.kalman = cv2.KalmanFilter(4, 2)  # 4 state, 2 measurement
+        
+        # State: [x, y, vx, vy] - pozisyon ve hız
+        self.kalman.statePre = np.array([0, 0, 0, 0], dtype=np.float32)
+        
+        # Transition matrix (A) - bir sonraki state nasıl hesaplanır
+        self.kalman.transitionMatrix = np.array([
+            [1, 0, 1, 0],  # x(t+1) = x(t) + vx(t)
+            [0, 1, 0, 1],  # y(t+1) = y(t) + vy(t)
+            [0, 0, 1, 0],  # vx(t+1) = vx(t)
+            [0, 0, 0, 1]   # vy(t+1) = vy(t)
+        ], dtype=np.float32)
+        
+        # Measurement matrix (H) - state'ten measurement'a dönüşüm
+        self.kalman.measurementMatrix = np.array([
+            [1, 0, 0, 0],  # x measurement
+            [0, 1, 0, 0]   # y measurement
+        ], dtype=np.float32)
+        
+        # Process noise (obje ne kadar düzensiz hareket eder)
+        self.kalman.processNoiseCov = np.eye(4, dtype=np.float32) * 0.1
+        
+        # Measurement noise (detection ne kadar güvenilir)
+        self.kalman.measurementNoiseCov = np.eye(2, dtype=np.float32) * 0.5
+        
+        # Error covariance
+        self.kalman.errorCovPost = np.eye(4, dtype=np.float32) * 1.0
+        
+        self.initialized = False
+        self.lost_frames = 0
+        self.max_lost_frames = 10
 
+import numpy as np
+import cv2
+
+class KalmanTracker:
+    def __init__(self):
+        # Kalman Filter oluştur
+        self.kalman = cv2.KalmanFilter(4, 2)  # 4 state, 2 measurement
+        
+        # State: [x, y, vx, vy] - pozisyon ve hız
+        self.kalman.statePre = np.array([0, 0, 0, 0], dtype=np.float32)
+        
+        # Transition matrix (A) - bir sonraki state nasıl hesaplanır
+        self.kalman.transitionMatrix = np.array([
+            [1, 0, 1, 0],  # x(t+1) = x(t) + vx(t)
+            [0, 1, 0, 1],  # y(t+1) = y(t) + vy(t)
+            [0, 0, 1, 0],  # vx(t+1) = vx(t)
+            [0, 0, 0, 1]   # vy(t+1) = vy(t)
+        ], dtype=np.float32)
+        
+        # Measurement matrix (H) - state'ten measurement'a dönüşüm
+        self.kalman.measurementMatrix = np.array([
+            [1, 0, 0, 0],  # x measurement
+            [0, 1, 0, 0]   # y measurement
+        ], dtype=np.float32)
+        
+        # Process noise (obje ne kadar düzensiz hareket eder)
+        self.kalman.processNoiseCov = np.eye(4, dtype=np.float32) * 0.1
+        
+        # Measurement noise (detection ne kadar güvenilir)
+        self.kalman.measurementNoiseCov = np.eye(2, dtype=np.float32) * 0.5
+        
+        # Error covariance
+        self.kalman.errorCovPost = np.eye(4, dtype=np.float32) * 1.0
+        
+        self.initialized = False
+        self.lost_frames = 0
+        self.max_lost_frames = 10
+        
+import numpy as np
+import cv2
+
+class KalmanTracker:
+    def __init__(self):
+        # Kalman Filter oluştur
+        self.kalman = cv2.KalmanFilter(4, 2)  # 4 state, 2 measurement
+        
+        # State: [x, y, vx, vy] - pozisyon ve hız
+        self.kalman.statePre = np.array([0, 0, 0, 0], dtype=np.float32)
+        
+        # Transition matrix (A) - bir sonraki state nasıl hesaplanır
+        self.kalman.transitionMatrix = np.array([
+            [1, 0, 1, 0],  # x(t+1) = x(t) + vx(t)
+            [0, 1, 0, 1],  # y(t+1) = y(t) + vy(t)
+            [0, 0, 1, 0],  # vx(t+1) = vx(t)
+            [0, 0, 0, 1]   # vy(t+1) = vy(t)
+        ], dtype=np.float32)
+        
+        # Measurement matrix (H) - state'ten measurement'a dönüşüm
+        self.kalman.measurementMatrix = np.array([
+            [1, 0, 0, 0],  # x measurement
+            [0, 1, 0, 0]   # y measurement
+        ], dtype=np.float32)
+        
+        # Process noise (obje ne kadar düzensiz hareket eder)
+        self.kalman.processNoiseCov = np.eye(4, dtype=np.float32) * 0.1
+        
+        # Measurement noise (detection ne kadar güvenilir)
+        self.kalman.measurementNoiseCov = np.eye(2, dtype=np.float32) * 0.5
+        
+        # Error covariance
+        self.kalman.errorCovPost = np.eye(4, dtype=np.float32) * 1.0
+        
+        self.initialized = False
+        self.lost_frames = 0
+        self.max_lost_frames = 10
+        
+    def update(self, detection=None):
+        """
+        Kalman Filter güncelleme
+        detection: contour approx, (x, y) tuple veya None
+        """
+        if detection is not None:
+            # Eğer detection bir tuple ise (contour, shape_type, color)
+            if isinstance(detection, tuple) and len(detection) >= 3:
+                contour, shape_type, color = detection
+                detection = contour  # Sadece contour'u al
+            
+            # Contour approx formatını kontrol et ve merkez hesapla
+            if isinstance(detection, np.ndarray):
+                if len(detection.shape) == 3:
+                    # OpenCV contour format: [[[x,y]], [[x,y]], ...]
+                    try:
+                        moments = cv2.moments(detection)
+                        if moments['m00'] != 0:
+                            center_x = moments['m10'] / moments['m00']
+                            center_y = moments['m01'] / moments['m00']
+                        else:
+                            # Moment hesaplanamadıysa ortalama al
+                            points = detection.reshape(-1, 2)
+                            center_x = np.mean(points[:, 0])
+                            center_y = np.mean(points[:, 1])
+                    except:
+                        # Hata durumunda basit ortalama
+                        points = detection.reshape(-1, 2)
+                        center_x = np.mean(points[:, 0])
+                        center_y = np.mean(points[:, 1])
+                    
+                    # Scalar değerlere çevir
+                    x = float(center_x)
+                    y = float(center_y)
+                    
+                elif len(detection.shape) == 2:
+                    # 2D array format
+                    center_x = np.mean(detection[:, 0])
+                    center_y = np.mean(detection[:, 1])
+                    x = float(center_x)
+                    y = float(center_y)
+                    
+                elif len(detection.shape) == 1 and len(detection) >= 2:
+                    # 1D array format
+                    x = float(detection[0])
+                    y = float(detection[1])
+                else:
+                    print(f"Unexpected array shape: {detection.shape}")
+                    return None
+                    
+            elif isinstance(detection, (tuple, list)):
+                # Tuple/list içindeki değerleri kontrol et
+                if len(detection) >= 2:
+                    try:
+                        x = float(detection[0])
+                        y = float(detection[1])
+                    except (ValueError, TypeError):
+                        # İç içe yapı varsa
+                        if hasattr(detection[0], '__len__'):
+                            x = float(detection[0][0])
+                            y = float(detection[1][0])
+                        else:
+                            print(f"Cannot convert to float: {detection[0]}, {detection[1]}")
+                            return None
+                else:
+                    print(f"Insufficient elements: {len(detection)}")
+                    return None
+            else:
+                print(f"Unexpected detection format: {type(detection)}")
+                return None
+            
+            # Detection var - correct ve predict
+            measurement = np.array([x, y], dtype=np.float32)
+            
+            if not self.initialized:
+                # İlk detection - state'i başlat
+                self.kalman.statePre = np.array([x, y, 0.0, 0.0], dtype=np.float32)
+                self.initialized = True
+                self.lost_frames = 0
+                
+            # Measurement ile düzelt
+            self.kalman.correct(measurement)
+            self.lost_frames = 0
+            
+        else:
+            # Detection yok - sadece predict
+            self.lost_frames += 1
+            
+        if self.initialized:
+            # Sonraki frame için tahmin
+            prediction = self.kalman.predict()
+            return prediction
+        else:
+            return None
+        
+    def draw_simple_trail(self,frame, position_history, max_length=30, color=(0, 255, 255), thickness=2):
+        if len(position_history) < 2:
+            return
+        
+        # Son max_length kadar pozisyonu al
+        recent_positions = list(position_history)[-max_length:]
+        
+        # Çizgileri çiz
+        for i in range(1, len(recent_positions)):
+            pt1 = (int(recent_positions[i-1][0]), int(recent_positions[i-1][1]))
+            pt2 = (int(recent_positions[i][0]), int(recent_positions[i][1]))
+            cv2.line(frame, pt1, pt2, color, thickness)
+        
+    def draw_center_circle(self,frame,data):
+        cv2.circle(frame, (data['position'][0], data['position'][1]), 5, (0, 255, 0), 4)
+    
+    def get_tracking_data(self):
+        """Tracking verilerini döndür"""
+        if not self.initialized:
+            return None
+            
+        state = self.kalman.statePost
+        
+        tracking_data = {
+            'position': (int(state[0]), int(state[1])),
+            'velocity': (state[2], state[3]),
+            'predicted_position': (int(state[0] + state[2]), int(state[1] + state[3])),
+            'confidence': max(0, 1 - (self.lost_frames / self.max_lost_frames)),
+            'tracking_status': 'ACTIVE' if self.lost_frames < 5 else 'PREDICTING' if self.lost_frames < self.max_lost_frames else 'LOST',
+            'lost_frames': self.lost_frames,
+            'speed': np.sqrt(state[2]**2 + state[3]**2)
+        }
+        
+        return tracking_data
 class AsyncVideoCapture:
     """Asynchronous video capture class to decouple frame grabbing from processing."""
     
@@ -378,7 +618,7 @@ class ShapeDetector:
             return np.mean(self.fps_buffer)
         return 0
 
-    def process_frame(self, frame):
+    def process_frame(self, frame,kalman_tracker:KalmanTracker):
         """Process a single frame with adaptive frame skipping for consistent FPS."""
         # Measure time to dynamically adjust frame skipping
         start_time = time.time()
@@ -389,6 +629,24 @@ class ShapeDetector:
         # Detect shapes
         shapes = self.detect_shapes(frame)
         
+        for index,shape in enumerate(shapes):
+            print(shapes)
+            prediction = kalman_tracker.update(shapes[0])
+            data = kalman_tracker.get_tracking_data()
+            kalman_tracker.draw_simple_trail(frame, position_history, max_length=30, color=(0, 255, 255), thickness=2)
+
+            if data:
+                position_history.append(data['position'])
+                kalman_tracker.draw_center_circle(frame, data)
+                print(f"Position: {data['position']}")
+                velocity_str = list(map('{:.2f}%'.format,data['velocity'][0]))
+                print(f"Velocity: ({velocity_str})")
+                print(f"Predicted: {data['predicted_position']}")
+                print(f"Status: {data['tracking_status']}")
+                print(f"Confidence: ({float(data['confidence'])})")
+                print(f"Speed: {float(data['confidence'])}")
+            else:
+                print("Tracker not initialized")
         # Draw results (modify frame in-place)
         self.draw_results(frame, shapes)
         
@@ -449,9 +707,9 @@ def main():
                 print("Error: Failed to capture frame.")
                 time.sleep(0.1)  # Wait before trying again
                 continue
-            
+            kalman_tracker = KalmanTracker()
             # Process the frame
-            result_frame = detector.process_frame(frame)
+            result_frame = detector.process_frame(frame,kalman_tracker)
             
             # Display the result
             cv2.imshow('Optimized Shape Detection', result_frame)
