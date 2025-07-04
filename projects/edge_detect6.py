@@ -171,6 +171,74 @@ class ShapeDetector:
         cv2.dilate(blue_mask, self.kernel3, dst=self.blue_mask, iterations=1)
         
         return self.red_mask, self.blue_mask
+    
+
+    def isRegularHexagon(self,approx,x,y,w,h):
+        if(len(approx) != 6):
+            return False
+        #Merkex x ve y noktaları
+        center_x = x + w / 2
+        center_y = y + h / 2
+    
+        distances = []
+
+        for point in approx:
+            px,py = point[0]
+            distance = np.sqrt((px-center_x)**2 + (py-center_y)**2)
+            distances.append(distance)
+            #noktaların merkeze olan uzaklıklarını al 
+
+        #ortalama merkez uzaklığı
+        mean_distance = np.mean(distances)
+        angles = []
+
+        for i in range(6):
+            #birinci nokta
+            p1 = approx[i][0]
+            #sonraki nokta
+            p2 = approx[(i+1)%6][0]
+            #iki sonraki nokta
+            p3 = approx[(i+2)%6][0]
+            #p2 den p1 e giden vektör
+            v1 = np.array([p1[0]-p2[0],p1[1]-p2[1]])
+            #p2 den p3 ye giden vektör
+            v2 = np.array([p3[0] - p2[0], p3[1] - p2[1]])
+
+            #np.dot iki vektörün nokta çarpımını alır
+            #np.linalg.norm vektörün uzunluğunu alır
+            #vektörlerin noktasal çarpımı / iki vektörün uzunluklarının çarpımı
+            #cosinus değeri
+            #-------- Meraklısına -------
+            #v1 = [3, 4]  # Uzunluk = √(9+16) = 5
+            # v2 = [1, 0]  # Uzunluk = √(1+0) = 1
+            # nokta_carpim = 3*1 + 4*0 = 3
+            # cos_angle = 3 / (5 * 1) = 0.6
+            # angle = arccos(0.6) = 53.13°
+            #-------- Meraklısına -------
+            cos_angle = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
+            #arccos ile açı bulunur
+            angle = np.arccos(np.clip(cos_angle, -1, 1)) * 180 / np.pi
+            angles.append(angle)
+
+        #noktaların merkeze olan uzaklığı %10 sapabilir
+        distance_tolerance = mean_distance * 0.1  # %10 tolerans
+        #açılar ise 10 derece sapabilir.
+        angle_tolerance = 10 
+        
+        #eşit mesafeler = 
+        #noktaların uzaklıklarını gez. Eğer ortalama mesafeye tölerans farkı ile geçmiyorsa kabul et.
+        uniform_distances = all(abs(d - mean_distance) < distance_tolerance for d in distances)
+        #aynı şekilde yukarıdaki işlemi ortalama açılar için yap
+        uniform_angles = all(abs(angle - 120) < angle_tolerance for angle in angles)
+        # En-boy oranı yaklaşık 1 olmalı (kare benzeri)
+        #en boy oranı al büyük olan payda olması için max min kullanıldı.
+        aspect_ratio = max(w, h) / min(w, h)
+        #eğer en boy oranı 1.3'den küçükse kabul et.
+        proper_aspect = aspect_ratio < 1.3
+
+        #koşullar sağlandı ise True döndür.
+        return uniform_distances and uniform_angles and proper_aspect
+
 
     def detect_shapes(self, frame):
         """Detect shapes with frame skipping for better performance."""
@@ -250,14 +318,15 @@ class ShapeDetector:
                     if 0.7 <= aspect_ratio <= 1.3:  # Looser bounds for better detection
                         shape_type = "square"
             else:  # color == "blue"
+                x,y,w,h = cv2.boundingRect(approx)
                 if corners == 4:
                     # Simple aspect ratio test only
-                    x, y, w, h = cv2.boundingRect(approx)
                     aspect_ratio = float(w) / h
                     if 0.7 <= aspect_ratio <= 1.3:
                         shape_type = "square"
-                elif 5 <= corners <= 7:
-                    shape_type = "hexagon"  # Skip complex verification for performance
+                elif corners == 6:
+                    if self.isRegularHexagon(approx,x,y,w,h):
+                            shape_type = "hexagon"  # Skip complex verification for performance
             
             # If shape detected, add to results
             if shape_type:
@@ -292,7 +361,7 @@ class ShapeDetector:
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, white_color, 1)
         
         return frame
-
+    
     def calculate_fps(self):
         """Calculate FPS with minimal overhead."""
         current_time = time.time()
