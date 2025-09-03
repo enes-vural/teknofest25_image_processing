@@ -19,9 +19,6 @@ WIDTH, HEIGHT = 640, 480
 FPS = 30
 MAX_PACKET_SIZE = 1400  # UDP için güvenli paket boyutu
 
-# Position tracking
-position_history = deque(maxlen=30)
-
 # Enable OpenCV optimizations (uses NEON SIMD instructions on ARM if available)
 cv2.setUseOptimized(True)
 
@@ -43,172 +40,6 @@ try:
     atexit.register(reset_governor)
 except:
     print("Could not set CPU governor (may need sudo)")
-
-
-class KalmanTracker:
-    def __init__(self):
-        # Kalman Filter oluştur
-        self.kalman = cv2.KalmanFilter(4, 2)  # 4 state, 2 measurement
-        
-        # State: [x, y, vx, vy] - pozisyon ve hız
-        self.kalman.statePre = np.array([0, 0, 0, 0], dtype=np.float32)
-        
-        # Transition matrix (A) - bir sonraki state nasıl hesaplanır
-        self.kalman.transitionMatrix = np.array([
-            [1, 0, 1, 0],  # x(t+1) = x(t) + vx(t)
-            [0, 1, 0, 1],  # y(t+1) = y(t) + vy(t)
-            [0, 0, 1, 0],  # vx(t+1) = vx(t)
-            [0, 0, 0, 1]   # vy(t+1) = vy(t)
-        ], dtype=np.float32)
-        
-        # Measurement matrix (H) - state'ten measurement'a dönüşüm
-        self.kalman.measurementMatrix = np.array([
-            [1, 0, 0, 0],  # x measurement
-            [0, 1, 0, 0]   # y measurement
-        ], dtype=np.float32)
-        
-        # Process noise (obje ne kadar düzensiz hareket eder)
-        self.kalman.processNoiseCov = np.eye(4, dtype=np.float32) * 0.1
-        
-        # Measurement noise (detection ne kadar güvenilir)
-        self.kalman.measurementNoiseCov = np.eye(2, dtype=np.float32) * 0.5
-        
-        # Error covariance
-        self.kalman.errorCovPost = np.eye(4, dtype=np.float32) * 1.0
-        
-        self.initialized = False
-        self.lost_frames = 0
-        self.max_lost_frames = 10
-        
-    def update(self, detection=None):
-        """
-        Kalman Filter güncelleme
-        detection: contour approx, (x, y) tuple veya None
-        """
-        if detection is not None:
-            # Eğer detection bir tuple ise (contour, shape_type, color)
-            if isinstance(detection, tuple) and len(detection) >= 3:
-                contour, shape_type, color = detection
-                detection = contour  # Sadece contour'u al
-            
-            # Contour approx formatını kontrol et ve merkez hesapla
-            if isinstance(detection, np.ndarray):
-                if len(detection.shape) == 3:
-                    # OpenCV contour format: [[[x,y]], [[x,y]], ...]
-                    try:
-                        moments = cv2.moments(detection)
-                        if moments['m00'] != 0:
-                            center_x = moments['m10'] / moments['m00']
-                            center_y = moments['m01'] / moments['m00']
-                        else:
-                            # Moment hesaplanamadıysa ortalama al
-                            points = detection.reshape(-1, 2)
-                            center_x = np.mean(points[:, 0])
-                            center_y = np.mean(points[:, 1])
-                    except:
-                        # Hata durumunda basit ortalama
-                        points = detection.reshape(-1, 2)
-                        center_x = np.mean(points[:, 0])
-                        center_y = np.mean(points[:, 1])
-                    
-                    # Scalar değerlere çevir
-                    x = float(center_x)
-                    y = float(center_y)
-                    
-                elif len(detection.shape) == 2:
-                    # 2D array format
-                    center_x = np.mean(detection[:, 0])
-                    center_y = np.mean(detection[:, 1])
-                    x = float(center_x)
-                    y = float(center_y)
-                    
-                elif len(detection.shape) == 1 and len(detection) >= 2:
-                    # 1D array format
-                    x = float(detection[0])
-                    y = float(detection[1])
-                else:
-                    print(f"Unexpected array shape: {detection.shape}")
-                    return None
-                    
-            elif isinstance(detection, (tuple, list)):
-                # Tuple/list içindeki değerleri kontrol et
-                if len(detection) >= 2:
-                    try:
-                        x = float(detection[0])
-                        y = float(detection[1])
-                    except (ValueError, TypeError):
-                        # İç içe yapı varsa
-                        if hasattr(detection[0], '__len__'):
-                            x = float(detection[0][0])
-                            y = float(detection[1][0])
-                        else:
-                            print(f"Cannot convert to float: {detection[0]}, {detection[1]}")
-                            return None
-                else:
-                    print(f"Insufficient elements: {len(detection)}")
-                    return None
-            else:
-                print(f"Unexpected detection format: {type(detection)}")
-                return None
-            
-            # Detection var - correct ve predict
-            measurement = np.array([x, y], dtype=np.float32)
-            
-            if not self.initialized:
-                # İlk detection - state'i başlat
-                self.kalman.statePre = np.array([x, y, 0.0, 0.0], dtype=np.float32)
-                self.initialized = True
-                self.lost_frames = 0
-                
-            # Measurement ile düzelt
-            self.kalman.correct(measurement)
-            self.lost_frames = 0
-            
-        else:
-            # Detection yok - sadece predict
-            self.lost_frames += 1
-            
-        if self.initialized:
-            # Sonraki frame için tahmin
-            prediction = self.kalman.predict()
-            return prediction
-        else:
-            return None
-        
-    def draw_simple_trail(self, frame, position_history, max_length=30, color=(0, 255, 255), thickness=2):
-        if len(position_history) < 2:
-            return
-        
-        # Son max_length kadar pozisyonu al
-        recent_positions = list(position_history)[-max_length:]
-        
-        # Çizgileri çiz
-        for i in range(1, len(recent_positions)):
-            pt1 = (int(recent_positions[i-1][0]), int(recent_positions[i-1][1]))
-            pt2 = (int(recent_positions[i][0]), int(recent_positions[i][1]))
-            cv2.line(frame, pt1, pt2, color, thickness)
-        
-    def draw_center_circle(self, frame, data):
-        cv2.circle(frame, (data['position'][0], data['position'][1]), 5, (0, 255, 0), 4)
-    
-    def get_tracking_data(self):
-        """Tracking verilerini döndür"""
-        if not self.initialized:
-            return None
-            
-        state = self.kalman.statePost
-        
-        tracking_data = {
-            'position': (int(state[0][0]), int(state[1][0])),
-            'velocity': (float(state[2][0]), float(state[3][0])),
-            'predicted_position': (int(state[0][0] + state[2][0]), int(state[1][0] + state[3][0])),
-            'confidence': max(0, 1 - (self.lost_frames / self.max_lost_frames)),
-            'tracking_status': 'ACTIVE' if self.lost_frames < 5 else 'PREDICTING' if self.lost_frames < self.max_lost_frames else 'LOST',
-            'lost_frames': self.lost_frames,
-            'speed': float(np.sqrt(state[2][0]**2 + state[3][0]**2))
-        }
-        
-        return tracking_data
 
 
 class GstreamerCamera:
@@ -235,7 +66,6 @@ class GstreamerCamera:
         # Check if pipeline opened successfully
         if not self.cap.isOpened():
             print("ERROR: Could not open GStreamer pipeline!")
-            # print("Pipeline:", self.cap.get(cv2.CAP_PROP_GSTREAMER_PIPELINE))
             raise RuntimeError("Failed to open GStreamer pipeline")
         else:
             print("GStreamer pipeline successfully opened")
@@ -606,7 +436,7 @@ class ShapeDetector:
             return np.mean(self.fps_buffer)
         return 0
 
-    def process_frame(self, frame, kalman_tracker):
+    def process_frame(self, frame):
         """Process a single frame with adaptive frame skipping for consistent FPS."""
         # Measure time to dynamically adjust frame skipping
         start_time = time.time()
@@ -616,33 +446,6 @@ class ShapeDetector:
         
         # Detect shapes
         shapes = self.detect_shapes(frame)
-        
-        # Process with Kalman tracker if shapes detected
-        if shapes:
-            # Use first detected shape for tracking
-            prediction = kalman_tracker.update(shapes[0])
-            data = kalman_tracker.get_tracking_data()
-            
-            if data:
-                position_history.append(data['position'])
-                kalman_tracker.draw_simple_trail(frame, position_history, max_length=30, color=(0, 255, 255), thickness=2)
-                kalman_tracker.draw_center_circle(frame, data)
-                
-                # Console output for debugging
-                print(f"Position: {data['position']}")
-                # print(f"Velocity: ({data['velocity'][0]:.2f}, {data['velocity'][1]:.2f})")
-                print(f"Predicted: {data['predicted_position']}")
-                print(f"Status: {data['tracking_status']}")
-                print(f"Confidence: {data['confidence']:.2f}")
-                print(f"Speed: {data['speed']:.2f}")
-        else:
-            # No detection - update Kalman with None
-            kalman_tracker.update(None)
-            data = kalman_tracker.get_tracking_data()
-            if data and data['tracking_status'] != 'LOST':
-                # Still draw trail if tracking hasn't been lost
-                kalman_tracker.draw_simple_trail(frame, position_history, max_length=30, color=(0, 255, 255), thickness=2)
-                print(f"No detection - Status: {data['tracking_status']}")
         
         # Draw detected shapes
         self.draw_results(frame, shapes)
@@ -713,9 +516,6 @@ def main():
     print(f"Processed video stream: {DEST_IP}:{PRO_DEST_PORT}")
     print(f"Raw video stream: {DEST_IP}:{RAW_DEST_PORT}")
     
-    # Initialize Kalman tracker
-    kalman_tracker = KalmanTracker()
-    
     # Initialize camera with GStreamer pipeline
     try:
         capture = GstreamerCamera()
@@ -769,8 +569,8 @@ def main():
                     packet = header + packet_data
                     sock_raw.sendto(packet, (DEST_IP, RAW_DEST_PORT))
             
-            # Process the frame (shape detection + Kalman tracking)
-            result_frame = detector.process_frame(frame, kalman_tracker)
+            # Process the frame (shape detection only - no tracking)
+            result_frame = detector.process_frame(frame)
             
             # Encode and send processed frame via UDP
             pro_success, pro_encoded_frame = cv2.imencode('.jpg', result_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
