@@ -1,0 +1,25 @@
+>>> %Run edge_detect6.py
+OpenCV optimizations enabled (using hardware acceleration)
+Set CPU to performance mode
+Could not set process priority (may need sudo)
+Process bound to CPU cores 2-3
+Processed video stream: 127.0.0.1:5051
+Raw video stream: 127.0.0.1:5052
+GStreamer pipeline: udpsrc port=5000 buffer-size=65536 timeout=0 ! application/x-rtp,media=video,encoding-name=H264,payload=96 ! rtpjitterbuffer latency=100 drop-on-latency=false ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! video/x-raw,format=BGR ! appsink sync=false emit-signals=true drop=true
+GStreamer pipeline successfully opened
+[ WARN:0@3.883] global cap_gstreamer.cpp:1777 open OpenCV | GStreamer warning: Cannot query video position: status=1, value=30, duration=-1
+Optimized Shape Detection System Running on Raspberry Pi...
+UDP Streaming Active
+Press 'q' to quit
+/home/firtina/Downloads/firtina-iha-main/projects/edge_detect6.py:202: DeprecationWarning: Conversion of an array with ndim > 0 to a scalar is deprecated, and will error in future. Ensure you extract a single element from your array before performing this operation. (Deprecated NumPy 1.25.)
+  'position': (int(state[0]), int(state[1])),
+/home/firtina/Downloads/firtina-iha-main/projects/edge_detect6.py:204: DeprecationWarning: Conversion of an array with ndim > 0 to a scalar is deprecated, and will error in future. Ensure you extract a single element from your array before performing this operation. (Deprecated NumPy 1.25.)
+  'predicted_position': (int(state[0] + state[2]), int(state[1] + state[3])),
+Position: (598, 464)
+Error occurred: unsupported format string passed to numpy.ndarray.__format__
+Shape Detection System Stopped.
+>>> 
+
+
+
+sdaece değiştirmem gerken yeri yaz tüm koduyazma
