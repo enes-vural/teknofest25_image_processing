@@ -1,3 +1,4 @@
+import socket
 import cv2
 import numpy as np
 import time
@@ -6,8 +7,21 @@ import threading
 import queue
 import os
 import atexit
+import subprocess
+import signal
+from collections import defaultdict
 
+# UDP Configuration
+DEST_IP = '127.0.0.1'
+PRO_DEST_PORT = 5051
+RAW_DEST_PORT = 5052
+WIDTH, HEIGHT = 640, 480
+FPS = 30
+MAX_PACKET_SIZE = 1400  # UDP için güvenli paket boyutu
+
+# Position tracking
 position_history = deque(maxlen=30)
+
 # Enable OpenCV optimizations (uses NEON SIMD instructions on ARM if available)
 cv2.setUseOptimized(True)
 
@@ -30,81 +44,6 @@ try:
 except:
     print("Could not set CPU governor (may need sudo)")
 
-class KalmanTracker:
-    def __init__(self):
-        # Kalman Filter oluştur
-        self.kalman = cv2.KalmanFilter(4, 2)  # 4 state, 2 measurement
-        
-        # State: [x, y, vx, vy] - pozisyon ve hız
-        self.kalman.statePre = np.array([0, 0, 0, 0], dtype=np.float32)
-        
-        # Transition matrix (A) - bir sonraki state nasıl hesaplanır
-        self.kalman.transitionMatrix = np.array([
-            [1, 0, 1, 0],  # x(t+1) = x(t) + vx(t)
-            [0, 1, 0, 1],  # y(t+1) = y(t) + vy(t)
-            [0, 0, 1, 0],  # vx(t+1) = vx(t)
-            [0, 0, 0, 1]   # vy(t+1) = vy(t)
-        ], dtype=np.float32)
-        
-        # Measurement matrix (H) - state'ten measurement'a dönüşüm
-        self.kalman.measurementMatrix = np.array([
-            [1, 0, 0, 0],  # x measurement
-            [0, 1, 0, 0]   # y measurement
-        ], dtype=np.float32)
-        
-        # Process noise (obje ne kadar düzensiz hareket eder)
-        self.kalman.processNoiseCov = np.eye(4, dtype=np.float32) * 0.1
-        
-        # Measurement noise (detection ne kadar güvenilir)
-        self.kalman.measurementNoiseCov = np.eye(2, dtype=np.float32) * 0.5
-        
-        # Error covariance
-        self.kalman.errorCovPost = np.eye(4, dtype=np.float32) * 1.0
-        
-        self.initialized = False
-        self.lost_frames = 0
-        self.max_lost_frames = 10
-
-import numpy as np
-import cv2
-
-class KalmanTracker:
-    def __init__(self):
-        # Kalman Filter oluştur
-        self.kalman = cv2.KalmanFilter(4, 2)  # 4 state, 2 measurement
-        
-        # State: [x, y, vx, vy] - pozisyon ve hız
-        self.kalman.statePre = np.array([0, 0, 0, 0], dtype=np.float32)
-        
-        # Transition matrix (A) - bir sonraki state nasıl hesaplanır
-        self.kalman.transitionMatrix = np.array([
-            [1, 0, 1, 0],  # x(t+1) = x(t) + vx(t)
-            [0, 1, 0, 1],  # y(t+1) = y(t) + vy(t)
-            [0, 0, 1, 0],  # vx(t+1) = vx(t)
-            [0, 0, 0, 1]   # vy(t+1) = vy(t)
-        ], dtype=np.float32)
-        
-        # Measurement matrix (H) - state'ten measurement'a dönüşüm
-        self.kalman.measurementMatrix = np.array([
-            [1, 0, 0, 0],  # x measurement
-            [0, 1, 0, 0]   # y measurement
-        ], dtype=np.float32)
-        
-        # Process noise (obje ne kadar düzensiz hareket eder)
-        self.kalman.processNoiseCov = np.eye(4, dtype=np.float32) * 0.1
-        
-        # Measurement noise (detection ne kadar güvenilir)
-        self.kalman.measurementNoiseCov = np.eye(2, dtype=np.float32) * 0.5
-        
-        # Error covariance
-        self.kalman.errorCovPost = np.eye(4, dtype=np.float32) * 1.0
-        
-        self.initialized = False
-        self.lost_frames = 0
-        self.max_lost_frames = 10
-        
-import numpy as np
-import cv2
 
 class KalmanTracker:
     def __init__(self):
@@ -236,7 +175,7 @@ class KalmanTracker:
         else:
             return None
         
-    def draw_simple_trail(self,frame, position_history, max_length=30, color=(0, 255, 255), thickness=2):
+    def draw_simple_trail(self, frame, position_history, max_length=30, color=(0, 255, 255), thickness=2):
         if len(position_history) < 2:
             return
         
@@ -249,7 +188,7 @@ class KalmanTracker:
             pt2 = (int(recent_positions[i][0]), int(recent_positions[i][1]))
             cv2.line(frame, pt1, pt2, color, thickness)
         
-    def draw_center_circle(self,frame,data):
+    def draw_center_circle(self, frame, data):
         cv2.circle(frame, (data['position'][0], data['position'][1]), 5, (0, 255, 0), 4)
     
     def get_tracking_data(self):
@@ -270,18 +209,19 @@ class KalmanTracker:
         }
         
         return tracking_data
-class AsyncVideoCapture:
-    """Asynchronous video capture class to decouple frame grabbing from processing."""
+
+
+class GstreamerCamera:
+    """Camera class using libcamera and GStreamer for optimal Raspberry Pi performance."""
     
-    def __init__(self, src=0, queue_size=2):
-        # Initialize the camera
-        self.cap = cv2.VideoCapture(src)
+    def __init__(self, queue_size=2):
+        # Kill any existing libcamera-vid or gst-launch processes
+        os.system("sudo pkill -9 libcamera-vid")
+        os.system("sudo pkill -9 gst-launch-1.0")
+        time.sleep(1)
         
-        # Essential camera settings for Raspberry Pi performance
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)  # Reduced resolution for performance
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
-        #if camera supports 30fps, set it to 30fps
-        self.cap.set(cv2.CAP_PROP_FPS, 30) 
+        # Start streaming process
+        self.stream_process = self.start_stream()
         
         # Create frame queue with minimal size to avoid memory buildup
         self.queue = queue.Queue(maxsize=queue_size)
@@ -289,28 +229,85 @@ class AsyncVideoCapture:
         # Flag to control the thread
         self.running = True
         
+        # Open GStreamer pipeline for receiving the stream
+        self.cap = self.receive_stream()
+        
+        # Check if pipeline opened successfully
+        if not self.cap.isOpened():
+            print("ERROR: Could not open GStreamer pipeline!")
+            # print("Pipeline:", self.cap.get(cv2.CAP_PROP_GSTREAMER_PIPELINE))
+            raise RuntimeError("Failed to open GStreamer pipeline")
+        else:
+            print("GStreamer pipeline successfully opened")
+            
+        # Warm up the camera
+        ret, _ = self.cap.read()
+        if not ret:
+            print("WARNING: Could not read initial frame from camera")
+        
         # Start the thread for frame capture
         self.thread = threading.Thread(target=self._update, daemon=True)
         self.thread.start()
     
+    def start_stream(self):
+        """Start libcamera-vid streaming process with optimized parameters."""
+        cmd = """
+        libcamera-vid -t 0 \
+        --nopreview \
+        --width 640 --height 480 \
+        --mode 1280:720 \
+        --framerate 30 \
+        --shutter 20000 \
+        --gain 3 \
+        --denoise cdn_off \
+        --brightness 0.1 \
+        --contrast 1.2 \
+        --sharpness 1.5 \
+        --ev 0.1 \
+        --awb auto \
+        --autofocus-mode continuous \
+        --autofocus-speed fast \
+        --autofocus-range normal \
+        --autofocus-window 0.25,0.25,0.5,0.5 \
+        --lens-position 1.0 \
+        --codec h264 \
+        --inline \
+        -o - | \
+        gst-launch-1.0 fdsrc ! queue max-size-buffers=0 ! h264parse ! rtph264pay config-interval=1 ! udpsink host=0.0.0.0 port=5000 sync=false
+        """
+        return subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    
+    def receive_stream(self):
+        """Create GStreamer pipeline for receiving the video stream."""
+        pipeline = (
+            "udpsrc port=5000 buffer-size=65536 timeout=0 ! "
+            "application/x-rtp,media=video,encoding-name=H264,payload=96 ! "
+            "rtpjitterbuffer latency=100 drop-on-latency=false ! "
+            "rtph264depay ! h264parse ! avdec_h264 ! "
+            "videoconvert ! video/x-raw,format=BGR ! "
+            "appsink sync=false emit-signals=true drop=true"
+        )
+        print("GStreamer pipeline:", pipeline)
+        return cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+    
     def _update(self):
         """Background thread function to continuously grab frames."""
         while self.running:
-            # Grab frame without decoding (fast operation)
-            self.cap.grab()
+            # Read frame from GStreamer pipeline
+            ret, frame = self.cap.read()
             
-            # Only retrieve and queue the frame if there's room
-            if not self.queue.full():
-                ret, frame = self.cap.retrieve()
-                if ret:
-                    # If queue is full, remove oldest frame
-                    if self.queue.full():
-                        try:
-                            self.queue.get_nowait()
-                        except queue.Empty:
-                            pass
-                    # Put the new frame in the queue
-                    self.queue.put(frame)
+            if ret:
+                # If queue is full, remove oldest frame
+                if self.queue.full():
+                    try:
+                        self.queue.get_nowait()
+                    except queue.Empty:
+                        pass
+                # Put the new frame in the queue
+                self.queue.put(frame)
+            else:
+                print("WARNING: Failed to read frame from GStreamer pipeline")
+                time.sleep(0.1)  # Wait before trying again
             
             # Small sleep to prevent CPU hogging
             time.sleep(0.001)
@@ -330,7 +327,26 @@ class AsyncVideoCapture:
         self.running = False
         if self.thread.is_alive():
             self.thread.join(timeout=1.0)
-        self.cap.release()
+        
+        # Release OpenCV resources
+        if hasattr(self, 'cap') and self.cap is not None:
+            self.cap.release()
+        
+        # Terminate the streaming process
+        if hasattr(self, 'stream_process') and self.stream_process is not None:
+            try:
+                self.stream_process.terminate()
+                self.stream_process.wait(timeout=2)
+            except:
+                # Force kill if termination fails
+                try:
+                    self.stream_process.kill()
+                except:
+                    pass
+        
+        # Make sure to kill any remaining processes
+        os.system("sudo pkill -9 libcamera-vid")
+        os.system("sudo pkill -9 gst-launch-1.0")
 
 
 class ShapeDetector:
@@ -348,7 +364,7 @@ class ShapeDetector:
         self.blue_upper = np.array([140, 255, 255], dtype=np.uint8)
         
         # Detection thresholds
-        self.min_contour_area = 200  # Smaller minimum area for reduced resolution
+        self.min_contour_area = 500  # Adjusted for 640x480 resolution
         self.approx_polygon_epsilon = 0.025
         
         # Fast morphological kernels (pre-computed)
@@ -372,9 +388,6 @@ class ShapeDetector:
 
     def preprocess_frame(self, frame):
         """Apply optimized preprocessing for Raspberry Pi."""
-        # Resize if needed (improves performance with minimal impact on detection)
-        # Already handling 320x240 input from the AsyncVideoCapture
-        
         # Allocate memory buffers if not already done
         if self.hsv_buffer is None or self.hsv_buffer.shape[:2] != frame.shape[:2]:
             h, w = frame.shape[:2]
@@ -387,9 +400,6 @@ class ShapeDetector:
         
         # Convert to HSV - efficient in-place conversion
         hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV, dst=self.hsv_buffer)
-        
-        # Skip CLAHE for performance (only use if lighting varies significantly)
-        # CLAHE is computationally expensive on Raspberry Pi
         
         return hsv
 
@@ -412,18 +422,17 @@ class ShapeDetector:
         
         return self.red_mask, self.blue_mask
     
-
-    def isRegularHexagon(self,approx,x,y,w,h):
+    def isRegularHexagon(self, approx, x, y, w, h):
         if(len(approx) != 6):
             return False
-        #Merkex x ve y noktaları
+        #Merkez x ve y noktaları
         center_x = x + w / 2
         center_y = y + h / 2
     
         distances = []
 
         for point in approx:
-            px,py = point[0]
+            px, py = point[0]
             distance = np.sqrt((px-center_x)**2 + (py-center_y)**2)
             distances.append(distance)
             #noktaların merkeze olan uzaklıklarını al 
@@ -440,21 +449,10 @@ class ShapeDetector:
             #iki sonraki nokta
             p3 = approx[(i+2)%6][0]
             #p2 den p1 e giden vektör
-            v1 = np.array([p1[0]-p2[0],p1[1]-p2[1]])
+            v1 = np.array([p1[0]-p2[0], p1[1]-p2[1]])
             #p2 den p3 ye giden vektör
             v2 = np.array([p3[0] - p2[0], p3[1] - p2[1]])
 
-            #np.dot iki vektörün nokta çarpımını alır
-            #np.linalg.norm vektörün uzunluğunu alır
-            #vektörlerin noktasal çarpımı / iki vektörün uzunluklarının çarpımı
-            #cosinus değeri
-            #-------- Meraklısına -------
-            #v1 = [3, 4]  # Uzunluk = √(9+16) = 5
-            # v2 = [1, 0]  # Uzunluk = √(1+0) = 1
-            # nokta_carpim = 3*1 + 4*0 = 3
-            # cos_angle = 3 / (5 * 1) = 0.6
-            # angle = arccos(0.6) = 53.13°
-            #-------- Meraklısına -------
             cos_angle = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
             #arccos ile açı bulunur
             angle = np.arccos(np.clip(cos_angle, -1, 1)) * 180 / np.pi
@@ -465,20 +463,12 @@ class ShapeDetector:
         #açılar ise 10 derece sapabilir.
         angle_tolerance = 10 
         
-        #eşit mesafeler = 
-        #noktaların uzaklıklarını gez. Eğer ortalama mesafeye tölerans farkı ile geçmiyorsa kabul et.
         uniform_distances = all(abs(d - mean_distance) < distance_tolerance for d in distances)
-        #aynı şekilde yukarıdaki işlemi ortalama açılar için yap
         uniform_angles = all(abs(angle - 120) < angle_tolerance for angle in angles)
-        # En-boy oranı yaklaşık 1 olmalı (kare benzeri)
-        #en boy oranı al büyük olan payda olması için max min kullanıldı.
         aspect_ratio = max(w, h) / min(w, h)
-        #eğer en boy oranı 1.3'den küçükse kabul et.
         proper_aspect = aspect_ratio < 1.3
 
-        #koşullar sağlandı ise True döndür.
         return uniform_distances and uniform_angles and proper_aspect
-
 
     def detect_shapes(self, frame):
         """Detect shapes with frame skipping for better performance."""
@@ -521,7 +511,6 @@ class ShapeDetector:
         detected_shapes = []
         
         # Use RETR_EXTERNAL and CHAIN_APPROX_SIMPLE for better performance
-        # Chain approx simple reduces the number of points in contours
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         # Early return if no contours (avoid unnecessary processing)
@@ -546,27 +535,26 @@ class ShapeDetector:
             
             # Fast shape identification with early returns
             shape_type = None
+            x, y, w, h = cv2.boundingRect(approx)
             
             # Use if/elif cascade for early termination
             if color == "red":
                 if corners == 3:
-                    shape_type = "triangle"  # Skip complex verification for performance
+                    shape_type = "triangle"
                 elif corners == 4:
                     # Simple aspect ratio test only
-                    x, y, w, h = cv2.boundingRect(approx)
                     aspect_ratio = float(w) / h
                     if 0.7 <= aspect_ratio <= 1.3:  # Looser bounds for better detection
                         shape_type = "square"
             else:  # color == "blue"
-                x,y,w,h = cv2.boundingRect(approx)
                 if corners == 4:
                     # Simple aspect ratio test only
                     aspect_ratio = float(w) / h
                     if 0.7 <= aspect_ratio <= 1.3:
                         shape_type = "square"
                 elif corners == 6:
-                    if self.isRegularHexagon(approx,x,y,w,h):
-                            shape_type = "hexagon"  # Skip complex verification for performance
+                    if self.isRegularHexagon(approx, x, y, w, h):
+                        shape_type = "hexagon"
             
             # If shape detected, add to results
             if shape_type:
@@ -618,7 +606,7 @@ class ShapeDetector:
             return np.mean(self.fps_buffer)
         return 0
 
-    def process_frame(self, frame,kalman_tracker:KalmanTracker):
+    def process_frame(self, frame, kalman_tracker):
         """Process a single frame with adaptive frame skipping for consistent FPS."""
         # Measure time to dynamically adjust frame skipping
         start_time = time.time()
@@ -629,25 +617,34 @@ class ShapeDetector:
         # Detect shapes
         shapes = self.detect_shapes(frame)
         
-        for index,shape in enumerate(shapes):
-            print(shapes)
+        # Process with Kalman tracker if shapes detected
+        if shapes:
+            # Use first detected shape for tracking
             prediction = kalman_tracker.update(shapes[0])
             data = kalman_tracker.get_tracking_data()
-            kalman_tracker.draw_simple_trail(frame, position_history, max_length=30, color=(0, 255, 255), thickness=2)
-
+            
             if data:
                 position_history.append(data['position'])
+                kalman_tracker.draw_simple_trail(frame, position_history, max_length=30, color=(0, 255, 255), thickness=2)
                 kalman_tracker.draw_center_circle(frame, data)
+                
+                # Console output for debugging
                 print(f"Position: {data['position']}")
-                velocity_str = list(map('{:.2f}%'.format,data['velocity'][0]))
-                print(f"Velocity: ({velocity_str})")
+                print(f"Velocity: ({data['velocity'][0]:.2f}, {data['velocity'][1]:.2f})")
                 print(f"Predicted: {data['predicted_position']}")
                 print(f"Status: {data['tracking_status']}")
-                print(f"Confidence: ({float(data['confidence'])})")
-                print(f"Speed: {float(data['confidence'])}")
-            else:
-                print("Tracker not initialized")
-        # Draw results (modify frame in-place)
+                print(f"Confidence: {data['confidence']:.2f}")
+                print(f"Speed: {data['speed']:.2f}")
+        else:
+            # No detection - update Kalman with None
+            kalman_tracker.update(None)
+            data = kalman_tracker.get_tracking_data()
+            if data and data['tracking_status'] != 'LOST':
+                # Still draw trail if tracking hasn't been lost
+                kalman_tracker.draw_simple_trail(frame, position_history, max_length=30, color=(0, 255, 255), thickness=2)
+                print(f"No detection - Status: {data['tracking_status']}")
+        
+        # Draw detected shapes
         self.draw_results(frame, shapes)
         
         # Add FPS counter
@@ -668,8 +665,27 @@ class ShapeDetector:
         return frame
 
 
+def setup_signal_handlers():
+    """Set up signal handlers for graceful shutdown."""
+    def signal_handler(sig, frame):
+        print("\nReceived signal to terminate. Cleaning up...")
+        # Kill libcamera and GStreamer processes
+        os.system("sudo pkill -9 libcamera-vid")
+        os.system("sudo pkill -9 gst-launch-1.0")
+        # Exit program
+        import sys
+        sys.exit(0)
+    
+    # Register signal handlers
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+
 def main():
-    """Main function optimized for Raspberry Pi performance."""
+    """Main function optimized for Raspberry Pi performance with UDP streaming."""
+    # Set up signal handlers for graceful termination
+    setup_signal_handlers()
+    
     # Set process priority (nice value) - lower means higher priority
     try:
         os.nice(-10)  # Requires appropriate permissions
@@ -686,19 +702,42 @@ def main():
     except:
         print("Could not set CPU affinity")
     
-    # Initialize camera with async capture
-    capture = AsyncVideoCapture(0)
+    # Kill any existing camera processes before starting
+    os.system("sudo pkill -9 libcamera-vid")
+    os.system("sudo pkill -9 gst-launch-1.0")
+    time.sleep(1)
     
-    # Allow camera to warm up
-    time.sleep(1.0)
+    # Initialize UDP sockets for streaming
+    sock_pro = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock_raw = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    print(f"Processed video stream: {DEST_IP}:{PRO_DEST_PORT}")
+    print(f"Raw video stream: {DEST_IP}:{RAW_DEST_PORT}")
     
-    # Initialize shape detector
-    detector = ShapeDetector()
+    # Initialize Kalman tracker
+    kalman_tracker = KalmanTracker()
     
-    print("Optimized Shape Detection System Running on Raspberry Pi...")
-    print("Press 'q' to quit")
-    
+    # Initialize camera with GStreamer pipeline
     try:
+        capture = GstreamerCamera()
+        
+        # Allow camera to warm up
+        time.sleep(2.0)
+        
+        # Test if camera is working
+        ret, test_frame = capture.read()
+        if not ret or test_frame is None:
+            print("ERROR: Camera not working properly. Exiting.")
+            return
+            
+        # Initialize shape detector
+        detector = ShapeDetector()
+        
+        print("Optimized Shape Detection System Running on Raspberry Pi...")
+        print("UDP Streaming Active")
+        print("Press 'q' to quit")
+        
+        frame_count = 0
+        
         # Main processing loop
         while True:
             # Read frame
@@ -707,11 +746,57 @@ def main():
                 print("Error: Failed to capture frame.")
                 time.sleep(0.1)  # Wait before trying again
                 continue
-            kalman_tracker = KalmanTracker()
-            # Process the frame
-            result_frame = detector.process_frame(frame,kalman_tracker)
             
-            # Display the result
+            # First, encode and send raw frame via UDP
+            raw_success, raw_encoded_frame = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            
+            if raw_success:
+                # Convert encoded frame to bytes
+                raw_frame_bytes = raw_encoded_frame.tobytes()
+                
+                # Split frame into packets and send
+                total_size = len(raw_frame_bytes)
+                num_packets = (total_size + MAX_PACKET_SIZE - 1) // MAX_PACKET_SIZE
+                
+                for i in range(num_packets):
+                    start_idx = i * MAX_PACKET_SIZE
+                    end_idx = min((i + 1) * MAX_PACKET_SIZE, total_size)
+                    
+                    # Packet header: frame_id, packet_id, total_packets, data_size
+                    header = f"{frame_count:06d},{i:03d},{num_packets:03d},{end_idx-start_idx:04d},".encode()
+                    packet_data = raw_frame_bytes[start_idx:end_idx]
+                    
+                    packet = header + packet_data
+                    sock_raw.sendto(packet, (DEST_IP, RAW_DEST_PORT))
+            
+            # Process the frame (shape detection + Kalman tracking)
+            result_frame = detector.process_frame(frame, kalman_tracker)
+            
+            # Encode and send processed frame via UDP
+            pro_success, pro_encoded_frame = cv2.imencode('.jpg', result_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            
+            if pro_success:
+                # Convert encoded frame to bytes
+                pro_frame_bytes = pro_encoded_frame.tobytes()
+                
+                # Split frame into packets and send
+                total_size = len(pro_frame_bytes)
+                num_packets = (total_size + MAX_PACKET_SIZE - 1) // MAX_PACKET_SIZE
+                
+                for i in range(num_packets):
+                    start_idx = i * MAX_PACKET_SIZE
+                    end_idx = min((i + 1) * MAX_PACKET_SIZE, total_size)
+                    
+                    # Packet header: frame_id, packet_id, total_packets, data_size
+                    header = f"{frame_count:06d},{i:03d},{num_packets:03d},{end_idx-start_idx:04d},".encode()
+                    packet_data = pro_frame_bytes[start_idx:end_idx]
+                    
+                    packet = header + packet_data
+                    sock_pro.sendto(packet, (DEST_IP, PRO_DEST_PORT))
+            
+            frame_count += 1
+            
+            # Display the result locally (optional - can be commented out for headless operation)
             cv2.imshow('Optimized Shape Detection', result_frame)
             
             # Exit on 'q' key press (with minimal wait time)
@@ -720,25 +805,50 @@ def main():
                 
     except KeyboardInterrupt:
         print("Program interrupted by user.")
+    except Exception as e:
+        print(f"Error occurred: {e}")
     
     finally:
         # Release resources
-        capture.release()
+        if 'capture' in locals():
+            capture.release()
+        if 'sock_pro' in locals():
+            sock_pro.close()
+        if 'sock_raw' in locals():
+            sock_raw.close()
         cv2.destroyAllWindows()
+        
+        # Kill any remaining camera processes
+        os.system("sudo pkill -9 libcamera-vid")
+        os.system("sudo pkill -9 gst-launch-1.0")
+        
         print("Shape Detection System Stopped.")
 
 
 if __name__ == "__main__":
-    # Check for Raspberry Pi-specific configurations
-    # Try to disable HDMI to free up memory and processing power
-    try:
-        tv_service = os.system("tvservice -s 2> /dev/null")
-        if tv_service == 0:  # Command exists (we're on Raspberry Pi)
-            # Only disable if not using the display
-            if not os.environ.get('DISPLAY'):
-                os.system("tvservice -o")
-                print("HDMI output disabled for performance")
-    except:
-        pass  # Not on Raspberry Pi or tvservice not available
-        
+    # Check for required modules
+    import sys
+    required_modules = ['cv2', 'numpy', 'subprocess', 'socket']
+    missing_modules = []
+    
+    for module in required_modules:
+        try:
+            __import__(module)
+        except ImportError:
+            missing_modules.append(module)
+    
+    if missing_modules:
+        print(f"ERROR: Missing required modules: {', '.join(missing_modules)}")
+        print("Please install them using: pip install " + ' '.join(missing_modules))
+        sys.exit(1)
+    
+    # Check for GStreamer support in OpenCV
+    if not cv2.getBuildInformation().find('GStreamer') != -1:
+        print("WARNING: OpenCV was not built with GStreamer support.")
+        print("This program requires OpenCV with GStreamer support to function correctly.")
+        user_input = input("Continue anyway? (y/n): ")
+        if user_input.lower() != 'y':
+            sys.exit(1)
+    
+    # Start the main program
     main()
