@@ -199,13 +199,13 @@ class KalmanTracker:
         state = self.kalman.statePost
         
         tracking_data = {
-            'position': (int(state[0]), int(state[1])),
-            'velocity': (state[2], state[3]),
-            'predicted_position': (int(state[0] + state[2]), int(state[1] + state[3])),
+            'position': (int(state[0][0]), int(state[1][0])),
+            'velocity': (float(state[2][0]), float(state[3][0])),
+            'predicted_position': (int(state[0][0] + state[2][0]), int(state[1][0] + state[3][0])),
             'confidence': max(0, 1 - (self.lost_frames / self.max_lost_frames)),
             'tracking_status': 'ACTIVE' if self.lost_frames < 5 else 'PREDICTING' if self.lost_frames < self.max_lost_frames else 'LOST',
             'lost_frames': self.lost_frames,
-            'speed': np.sqrt(state[2]**2 + state[3]**2)
+            'speed': float(np.sqrt(state[2][0]**2 + state[3][0]**2))
         }
         
         return tracking_data
@@ -630,7 +630,7 @@ class ShapeDetector:
                 
                 # Console output for debugging
                 print(f"Position: {data['position']}")
-                print(f"Velocity: ({data['velocity'][0]:.2f}, {data['velocity'][1]:.2f})")
+                # print(f"Velocity: ({data['velocity'][0]:.2f}, {data['velocity'][1]:.2f})")
                 print(f"Predicted: {data['predicted_position']}")
                 print(f"Status: {data['tracking_status']}")
                 print(f"Confidence: {data['confidence']:.2f}")
