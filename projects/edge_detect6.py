@@ -10,49 +10,83 @@ import atexit
 import subprocess
 import signal
 from collections import defaultdict
+import logging
+from datetime import datetime
 
-# UDP Configuration
-DEST_IP = '127.0.0.1'
-PRO_DEST_PORT = 5051
-RAW_DEST_PORT = 5052
+# Camera Configuration
 WIDTH, HEIGHT = 640, 480
 FPS = 30
-MAX_PACKET_SIZE = 1400  # UDP için güvenli paket boyutu
 
 # Enable OpenCV optimizations (uses NEON SIMD instructions on ARM if available)
 cv2.setUseOptimized(True)
 
+# Logging Configuration
+def setup_logging():
+    """Set up logging configuration for shape detection system."""
+    # Create logs directory if it doesn't exist
+    if not os.path.exists('logs'):
+        os.makedirs('logs')
+    
+    # Create log filename with current date
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    log_filename = f"logs/shape_detection_{current_date}.txt"
+    
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+        handlers=[
+            logging.FileHandler(log_filename, encoding='utf-8'),
+            logging.StreamHandler()  # Also print to console
+        ]
+    )
+    
+    logger = logging.getLogger(__name__)
+    logger.info("========== Shape Detection System Started ==========")
+    logger.info(f"Log file: {log_filename}")
+    
+    return logger
+
+# Initialize logger
+logger = setup_logging()
+
 # Ensure OpenCV is using optimized code paths
 if cv2.useOptimized():
-    print("OpenCV optimizations enabled (using hardware acceleration)")
+    logger.info("OpenCV optimizations enabled (using hardware acceleration)")
 else:
-    print("WARNING: OpenCV optimizations not available")
+    logger.warning("OpenCV optimizations not available")
 
 # Set Raspberry Pi to performance mode (requires appropriate permissions)
 try:
     os.system("echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null")
-    print("Set CPU to performance mode")
+    logger.info("CPU set to performance mode")
     
     # Reset to ondemand governor on exit
     def reset_governor():
         os.system("echo ondemand | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null")
+        logger.info("CPU governor reset to ondemand")
     
     atexit.register(reset_governor)
 except:
-    print("Could not set CPU governor (may need sudo)")
+    logger.warning("Could not set CPU governor (may need sudo)")
 
 
 class GstreamerCamera:
     """Camera class using libcamera and GStreamer for optimal Raspberry Pi performance."""
     
     def __init__(self, queue_size=2):
+        logger.info("Initializing GStreamer camera...")
+        
         # Kill any existing libcamera-vid or gst-launch processes
         os.system("sudo pkill -9 libcamera-vid")
         os.system("sudo pkill -9 gst-launch-1.0")
         time.sleep(1)
+        logger.info("Existing camera processes terminated")
         
         # Start streaming process
         self.stream_process = self.start_stream()
+        logger.info("Streaming process started")
         
         # Create frame queue with minimal size to avoid memory buildup
         self.queue = queue.Queue(maxsize=queue_size)
@@ -65,19 +99,22 @@ class GstreamerCamera:
         
         # Check if pipeline opened successfully
         if not self.cap.isOpened():
-            print("ERROR: Could not open GStreamer pipeline!")
+            logger.error("Could not open GStreamer pipeline!")
             raise RuntimeError("Failed to open GStreamer pipeline")
         else:
-            print("GStreamer pipeline successfully opened")
+            logger.info("GStreamer pipeline successfully opened")
             
         # Warm up the camera
         ret, _ = self.cap.read()
         if not ret:
-            print("WARNING: Could not read initial frame from camera")
+            logger.warning("Could not read initial frame from camera")
+        else:
+            logger.info("Camera warmed up successfully")
         
         # Start the thread for frame capture
         self.thread = threading.Thread(target=self._update, daemon=True)
         self.thread.start()
+        logger.info("Frame capture thread started")
     
     def start_stream(self):
         """Start libcamera-vid streaming process with optimized parameters."""
@@ -117,16 +154,18 @@ class GstreamerCamera:
             "videoconvert ! video/x-raw,format=BGR ! "
             "appsink sync=false emit-signals=true drop=true"
         )
-        print("GStreamer pipeline:", pipeline)
+        logger.debug(f"GStreamer pipeline: {pipeline}")
         return cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
     
     def _update(self):
         """Background thread function to continuously grab frames."""
+        frame_count = 0
         while self.running:
             # Read frame from GStreamer pipeline
             ret, frame = self.cap.read()
             
             if ret:
+                frame_count += 1
                 # If queue is full, remove oldest frame
                 if self.queue.full():
                     try:
@@ -135,8 +174,12 @@ class GstreamerCamera:
                         pass
                 # Put the new frame in the queue
                 self.queue.put(frame)
+                
+                # Log frame capture every 100 frames to avoid spam
+                if frame_count % 100 == 0:
+                    logger.debug(f"Captured {frame_count} frames")
             else:
-                print("WARNING: Failed to read frame from GStreamer pipeline")
+                logger.warning("Failed to read frame from GStreamer pipeline")
                 time.sleep(0.1)  # Wait before trying again
             
             # Small sleep to prevent CPU hogging
@@ -154,6 +197,7 @@ class GstreamerCamera:
     
     def release(self):
         """Release resources."""
+        logger.info("Releasing camera resources...")
         self.running = False
         if self.thread.is_alive():
             self.thread.join(timeout=1.0)
@@ -177,12 +221,15 @@ class GstreamerCamera:
         # Make sure to kill any remaining processes
         os.system("sudo pkill -9 libcamera-vid")
         os.system("sudo pkill -9 gst-launch-1.0")
+        logger.info("Camera resources released")
 
 
 class ShapeDetector:
     """Class for detecting specific colored geometric shapes optimized for Raspberry Pi."""
     
     def __init__(self):
+        logger.info("Initializing Shape Detector...")
+        
         # Pre-compute constants and allocate buffers to avoid repeated memory allocations
         
         # Color boundaries in HSV space (lower, upper) - optimized for Raspberry Pi camera 
@@ -215,6 +262,15 @@ class ShapeDetector:
         # Skip frames counter (for periodic processing)
         self.frame_count = 0
         self.process_every_n_frames = 1  # Process every frame by default
+        
+        # Statistics for logging
+        self.total_frames_processed = 0
+        self.shapes_detected_count = {'red_triangle': 0, 'red_square': 0, 'blue_square': 0, 'blue_hexagon': 0}
+        self.last_log_time = time.time()
+        
+        logger.info("Shape Detector initialized successfully")
+        logger.info(f"Color detection thresholds - Red HSV: {self.red_lower1}-{self.red_upper1} & {self.red_lower2}-{self.red_upper2}")
+        logger.info(f"Color detection thresholds - Blue HSV: {self.blue_lower}-{self.blue_upper}")
 
     def preprocess_frame(self, frame):
         """Apply optimized preprocessing for Raspberry Pi."""
@@ -224,6 +280,7 @@ class ShapeDetector:
             self.hsv_buffer = np.empty((h, w, 3), dtype=np.uint8)
             self.red_mask = np.empty((h, w), dtype=np.uint8)
             self.blue_mask = np.empty((h, w), dtype=np.uint8)
+            logger.debug(f"Allocated buffers for frame size: {w}x{h}")
         
         # Use medianBlur instead of GaussianBlur (faster on Raspberry Pi with NEON)
         blurred = cv2.medianBlur(frame, 3)  # 3x3 median is faster than Gaussian
@@ -304,6 +361,7 @@ class ShapeDetector:
         """Detect shapes with frame skipping for better performance."""
         # Increment frame counter
         self.frame_count += 1
+        self.total_frames_processed += 1
         
         # Skip frames if needed (process_every_n_frames can be adjusted dynamically)
         if self.frame_count % self.process_every_n_frames != 0:
@@ -326,15 +384,37 @@ class ShapeDetector:
         blue_close = blue_pixels > threshold_pixels
         
         if red_close:
-            print("Red square/triangle is very close – inside the shape.")
+            logger.info("PROXIMITY ALERT: Red shape detected very close (inside detection zone)")
         if blue_close:
-            print("Blue square/hexagon is very close – inside the shape.")
+            logger.info("PROXIMITY ALERT: Blue shape detected very close (inside detection zone)")
         
         # Fast contour finding with simple approximation
         red_shapes = self.process_contours(red_mask, frame, "red")
         blue_shapes = self.process_contours(blue_mask, frame, "blue")
         
-        return red_shapes + blue_shapes
+        all_shapes = red_shapes + blue_shapes
+        
+        # Log detected shapes
+        if all_shapes:
+            shape_info = []
+            for contour, shape_type, color in all_shapes:
+                shape_key = f"{color}_{shape_type}"
+                self.shapes_detected_count[shape_key] += 1
+                
+                # Get shape position and size
+                x, y, w, h = cv2.boundingRect(contour)
+                area = cv2.contourArea(contour)
+                shape_info.append(f"{color} {shape_type} (pos:{x},{y} size:{w}x{h} area:{area:.0f})")
+            
+            logger.info(f"SHAPES DETECTED: {'; '.join(shape_info)}")
+        
+        # Log statistics every 30 seconds
+        current_time = time.time()
+        if current_time - self.last_log_time > 30:
+            self.log_statistics()
+            self.last_log_time = current_time
+        
+        return all_shapes
 
     def process_contours(self, mask, frame, color):
         """Process contours with optimized algorithm for Raspberry Pi."""
@@ -346,6 +426,8 @@ class ShapeDetector:
         # Early return if no contours (avoid unnecessary processing)
         if not contours:
             return []
+        
+        logger.debug(f"Found {len(contours)} {color} contours to analyze")
         
         # Sort by area and limit to top N contours for performance
         if len(contours) > 5:  # Only sort if necessary
@@ -371,20 +453,24 @@ class ShapeDetector:
             if color == "red":
                 if corners == 3:
                     shape_type = "triangle"
+                    logger.debug(f"Red triangle detected: corners={corners}, area={area:.0f}")
                 elif corners == 4:
                     # Simple aspect ratio test only
                     aspect_ratio = float(w) / h
                     if 0.7 <= aspect_ratio <= 1.3:  # Looser bounds for better detection
                         shape_type = "square"
+                        logger.debug(f"Red square detected: corners={corners}, aspect_ratio={aspect_ratio:.2f}, area={area:.0f}")
             else:  # color == "blue"
                 if corners == 4:
                     # Simple aspect ratio test only
                     aspect_ratio = float(w) / h
                     if 0.7 <= aspect_ratio <= 1.3:
                         shape_type = "square"
+                        logger.debug(f"Blue square detected: corners={corners}, aspect_ratio={aspect_ratio:.2f}, area={area:.0f}")
                 elif corners == 6:
                     if self.isRegularHexagon(approx, x, y, w, h):
                         shape_type = "hexagon"
+                        logger.debug(f"Blue hexagon detected: corners={corners}, area={area:.0f}")
             
             # If shape detected, add to results
             if shape_type:
@@ -436,6 +522,26 @@ class ShapeDetector:
             return np.mean(self.fps_buffer)
         return 0
 
+    def log_statistics(self):
+        """Log detection statistics."""
+        total_shapes = sum(self.shapes_detected_count.values())
+        logger.info("=== DETECTION STATISTICS (Last 30 seconds) ===")
+        logger.info(f"Total frames processed: {self.total_frames_processed}")
+        logger.info(f"Total shapes detected: {total_shapes}")
+        
+        for shape_type, count in self.shapes_detected_count.items():
+            if count > 0:
+                logger.info(f"  {shape_type.replace('_', ' ').title()}: {count} detections")
+        
+        if self.fps_buffer:
+            avg_fps = np.mean(self.fps_buffer)
+            logger.info(f"Average FPS: {avg_fps:.2f}")
+        
+        logger.info("=" * 45)
+        
+        # Reset counters
+        self.shapes_detected_count = {'red_triangle': 0, 'red_square': 0, 'blue_square': 0, 'blue_hexagon': 0}
+
     def process_frame(self, frame):
         """Process a single frame with adaptive frame skipping for consistent FPS."""
         # Measure time to dynamically adjust frame skipping
@@ -454,16 +560,23 @@ class ShapeDetector:
         cv2.putText(frame, f"FPS: {fps:.1f}", (10, 30), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
         
+        # Add frame counter
+        cv2.putText(frame, f"Frames: {self.total_frames_processed}", (10, 50), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        
         # Dynamically adjust frame processing rate based on performance
         elapsed_time = time.time() - start_time
         target_time = 1.0 / 20.0  # Target 20 FPS for processing
         
         # If processing is too slow, increase frame skip rate
         if elapsed_time > target_time:
-            self.process_every_n_frames = min(3, self.process_every_n_frames + 1)
+            if self.process_every_n_frames < 3:
+                self.process_every_n_frames += 1
+                logger.debug(f"Increased frame skip to every {self.process_every_n_frames} frames (processing too slow)")
         # If processing is fast, decrease frame skip rate
         elif elapsed_time < target_time * 0.7 and self.process_every_n_frames > 1:
             self.process_every_n_frames -= 1
+            logger.debug(f"Decreased frame skip to every {self.process_every_n_frames} frames (processing fast enough)")
             
         return frame
 
@@ -471,10 +584,11 @@ class ShapeDetector:
 def setup_signal_handlers():
     """Set up signal handlers for graceful shutdown."""
     def signal_handler(sig, frame):
-        print("\nReceived signal to terminate. Cleaning up...")
+        logger.info(f"Received signal {sig} to terminate. Cleaning up...")
         # Kill libcamera and GStreamer processes
         os.system("sudo pkill -9 libcamera-vid")
         os.system("sudo pkill -9 gst-launch-1.0")
+        logger.info("Shape Detection System terminated gracefully")
         # Exit program
         import sys
         sys.exit(0)
@@ -485,36 +599,31 @@ def setup_signal_handlers():
 
 
 def main():
-    """Main function optimized for Raspberry Pi performance with UDP streaming."""
+    """Main function optimized for Raspberry Pi performance with logging."""
     # Set up signal handlers for graceful termination
     setup_signal_handlers()
     
     # Set process priority (nice value) - lower means higher priority
     try:
         os.nice(-10)  # Requires appropriate permissions
-        print("Process priority increased")
+        logger.info("Process priority increased (nice value: -10)")
     except:
-        print("Could not set process priority (may need sudo)")
+        logger.warning("Could not set process priority (may need sudo)")
     
     # Attempt to bind to specific CPU cores (2-3 if available)
     try:
         # On quad-core Raspberry Pi, use cores 2-3 for this process
         cores = "2-3" if os.cpu_count() >= 4 else "0-1"
         os.system(f"taskset -cp {cores} {os.getpid()} > /dev/null")
-        print(f"Process bound to CPU cores {cores}")
+        logger.info(f"Process bound to CPU cores {cores}")
     except:
-        print("Could not set CPU affinity")
+        logger.warning("Could not set CPU affinity")
     
     # Kill any existing camera processes before starting
     os.system("sudo pkill -9 libcamera-vid")
     os.system("sudo pkill -9 gst-launch-1.0")
     time.sleep(1)
-    
-    # Initialize UDP sockets for streaming
-    sock_pro = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock_raw = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    print(f"Processed video stream: {DEST_IP}:{PRO_DEST_PORT}")
-    print(f"Raw video stream: {DEST_IP}:{RAW_DEST_PORT}")
+    logger.info("Existing camera processes terminated before startup")
     
     # Initialize camera with GStreamer pipeline
     try:
@@ -522,113 +631,83 @@ def main():
         
         # Allow camera to warm up
         time.sleep(2.0)
+        logger.info("Camera warm-up completed")
         
         # Test if camera is working
         ret, test_frame = capture.read()
         if not ret or test_frame is None:
-            print("ERROR: Camera not working properly. Exiting.")
+            logger.error("Camera not working properly. Exiting.")
             return
+        else:
+            logger.info(f"Camera test successful - frame size: {test_frame.shape}")
             
         # Initialize shape detector
         detector = ShapeDetector()
         
-        print("Optimized Shape Detection System Running on Raspberry Pi...")
-        print("UDP Streaming Active")
-        print("Press 'q' to quit")
+        logger.info("========== Shape Detection System Active ==========")
+        logger.info("System running - Press 'q' to quit")
         
         frame_count = 0
+        start_time = time.time()
         
         # Main processing loop
         while True:
             # Read frame
             ret, frame = capture.read()
             if not ret:
-                print("Error: Failed to capture frame.")
+                logger.warning("Failed to capture frame - retrying...")
                 time.sleep(0.1)  # Wait before trying again
                 continue
-            
-            # First, encode and send raw frame via UDP
-            raw_success, raw_encoded_frame = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-            
-            if raw_success:
-                # Convert encoded frame to bytes
-                raw_frame_bytes = raw_encoded_frame.tobytes()
-                
-                # Split frame into packets and send
-                total_size = len(raw_frame_bytes)
-                num_packets = (total_size + MAX_PACKET_SIZE - 1) // MAX_PACKET_SIZE
-                
-                for i in range(num_packets):
-                    start_idx = i * MAX_PACKET_SIZE
-                    end_idx = min((i + 1) * MAX_PACKET_SIZE, total_size)
-                    
-                    # Packet header: frame_id, packet_id, total_packets, data_size
-                    header = f"{frame_count:06d},{i:03d},{num_packets:03d},{end_idx-start_idx:04d},".encode()
-                    packet_data = raw_frame_bytes[start_idx:end_idx]
-                    
-                    packet = header + packet_data
-                    sock_raw.sendto(packet, (DEST_IP, RAW_DEST_PORT))
-            
-            # Process the frame (shape detection only - no tracking)
+
+            # Process the frame (shape detection)
             result_frame = detector.process_frame(frame)
-            
-            # Encode and send processed frame via UDP
-            pro_success, pro_encoded_frame = cv2.imencode('.jpg', result_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-            
-            if pro_success:
-                # Convert encoded frame to bytes
-                pro_frame_bytes = pro_encoded_frame.tobytes()
-                
-                # Split frame into packets and send
-                total_size = len(pro_frame_bytes)
-                num_packets = (total_size + MAX_PACKET_SIZE - 1) // MAX_PACKET_SIZE
-                
-                for i in range(num_packets):
-                    start_idx = i * MAX_PACKET_SIZE
-                    end_idx = min((i + 1) * MAX_PACKET_SIZE, total_size)
-                    
-                    # Packet header: frame_id, packet_id, total_packets, data_size
-                    header = f"{frame_count:06d},{i:03d},{num_packets:03d},{end_idx-start_idx:04d},".encode()
-                    packet_data = pro_frame_bytes[start_idx:end_idx]
-                    
-                    packet = header + packet_data
-                    sock_pro.sendto(packet, (DEST_IP, PRO_DEST_PORT))
             
             frame_count += 1
             
+            # Log system status every 500 frames
+            if frame_count % 500 == 0:
+                elapsed_time = time.time() - start_time
+                avg_fps = frame_count / elapsed_time
+                logger.info(f"SYSTEM STATUS: Processed {frame_count} frames in {elapsed_time:.1f}s (avg: {avg_fps:.2f} FPS)")
+            
             # Display the result locally (optional - can be commented out for headless operation)
-            cv2.imshow('Optimized Shape Detection', result_frame)
+            cv2.imshow('Shape Detection with Logging', result_frame)
             
             # Exit on 'q' key press (with minimal wait time)
             if cv2.waitKey(1) & 0xFF == ord('q'):
+                logger.info("User requested shutdown (pressed 'q')")
                 break
                 
     except KeyboardInterrupt:
-        print("Program interrupted by user.")
+        logger.info("Program interrupted by user (Ctrl+C)")
     except Exception as e:
-        print(f"Error occurred: {e}")
+        logger.error(f"Unexpected error occurred: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
     
     finally:
         # Release resources
         if 'capture' in locals():
             capture.release()
-        if 'sock_pro' in locals():
-            sock_pro.close()
-        if 'sock_raw' in locals():
-            sock_raw.close()
         cv2.destroyAllWindows()
         
         # Kill any remaining camera processes
         os.system("sudo pkill -9 libcamera-vid")
         os.system("sudo pkill -9 gst-launch-1.0")
         
-        print("Shape Detection System Stopped.")
+        # Log final statistics
+        if 'detector' in locals():
+            detector.log_statistics()
+        
+        total_runtime = time.time() - start_time if 'start_time' in locals() else 0
+        logger.info(f"Total runtime: {total_runtime:.2f} seconds")
+        logger.info("========== Shape Detection System Stopped ==========")
 
 
 if __name__ == "__main__":
     # Check for required modules
     import sys
-    required_modules = ['cv2', 'numpy', 'subprocess', 'socket']
+    required_modules = ['cv2', 'numpy', 'subprocess']
     missing_modules = []
     
     for module in required_modules:
