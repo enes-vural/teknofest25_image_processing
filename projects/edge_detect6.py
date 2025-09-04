@@ -240,12 +240,23 @@ class ShapeDetector:
         self.blue_lower = np.array([100, 100, 100], dtype=np.uint8)
         self.blue_upper = np.array([140, 255, 255], dtype=np.uint8)
         
-        # Detection thresholds
-        self.min_contour_area = 500  # Adjusted for 640x480 resolution
-        self.approx_polygon_epsilon = 0.025
+        # IMPROVED DETECTION THRESHOLDS - YANLŞ POZİTİFLERİ AZALTMAK İÇİN
+        self.min_contour_area = 1200  # Artırıldı (önceki: 500)
+        self.max_contour_area = 50000  # Maksimum alan sınırı eklendi
+        self.approx_polygon_epsilon = 0.03  # Biraz artırıldı daha keskin köşeler için
+        
+        # Shape validation parameters - YENİ
+        self.min_solidity = 0.75  # Minimum solidity (dolu alan / convex hull alanı)
+        self.min_circularity = 0.5  # Minimum circularity
+        self.max_vertices_deviation = 1  # Maximum allowed extra vertices for shape
+        
+        # Temporal filtering - YENİ
+        self.detection_history = deque(maxlen=5)  # Son 5 frame'deki detectionları sakla
+        self.min_detection_consistency = 3  # En az 3 frame'de görülmeli
         
         # Fast morphological kernels (pre-computed)
         self.kernel3 = np.ones((3, 3), np.uint8)  # Smaller kernel for better performance
+        self.kernel5 = np.ones((5, 5), np.uint8)  # Larger kernel for noise removal - YENİ
         
         # Reuse memory buffers for intermediate results
         self.hsv_buffer = None
@@ -268,9 +279,13 @@ class ShapeDetector:
         self.shapes_detected_count = {'red_triangle': 0, 'red_square': 0, 'blue_square': 0, 'blue_hexagon': 0}
         self.last_log_time = time.time()
         
+        # Noise detection parameters - YENİ
+        self.skin_lower = np.array([0, 20, 50], dtype=np.uint8)
+        self.skin_upper = np.array([30, 150, 200], dtype=np.uint8)
+        
         logger.info("Shape Detector initialized successfully")
-        logger.info(f"Color detection thresholds - Red HSV: {self.red_lower1}-{self.red_upper1} & {self.red_lower2}-{self.red_upper2}")
-        logger.info(f"Color detection thresholds - Blue HSV: {self.blue_lower}-{self.blue_upper}")
+        logger.info(f"Min contour area: {self.min_contour_area}, Max contour area: {self.max_contour_area}")
+        logger.info(f"Min solidity: {self.min_solidity}, Min circularity: {self.min_circularity}")
 
     def preprocess_frame(self, frame):
         """Apply optimized preprocessing for Raspberry Pi."""
@@ -282,8 +297,9 @@ class ShapeDetector:
             self.blue_mask = np.empty((h, w), dtype=np.uint8)
             logger.debug(f"Allocated buffers for frame size: {w}x{h}")
         
-        # Use medianBlur instead of GaussianBlur (faster on Raspberry Pi with NEON)
-        blurred = cv2.medianBlur(frame, 3)  # 3x3 median is faster than Gaussian
+        # Use bilateral filter for better edge preservation - YENİ
+        # Daha iyi kenar koruması sağlar ve gürültüyü azaltır
+        blurred = cv2.bilateralFilter(frame, 5, 75, 75)
         
         # Convert to HSV - efficient in-place conversion
         hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV, dst=self.hsv_buffer)
@@ -291,7 +307,7 @@ class ShapeDetector:
         return hsv
 
     def create_color_masks(self, hsv_frame):
-        """Create optimized binary masks for red and blue colors."""
+        """Create optimized binary masks for red and blue colors with improved noise reduction."""
         # Create red masks - using pre-allocated buffers
         red_mask1 = cv2.inRange(hsv_frame, self.red_lower1, self.red_upper1)
         red_mask2 = cv2.inRange(hsv_frame, self.red_lower2, self.red_upper2)
@@ -302,12 +318,80 @@ class ShapeDetector:
         # Create blue mask - using pre-allocated buffer
         blue_mask = cv2.inRange(hsv_frame, self.blue_lower, self.blue_upper)
         
-        # Use smaller kernel (3x3) and fewer morphological operations
-        # Replace morphologyEx with dilate (faster on Raspberry Pi)
-        cv2.dilate(self.red_mask, self.kernel3, dst=self.red_mask, iterations=1)
-        cv2.dilate(blue_mask, self.kernel3, dst=self.blue_mask, iterations=1)
+        # IMPROVED MORPHOLOGICAL OPERATIONS - YENİ
+        # Önce erosion ile küçük noise'ları temizle, sonra dilation ile şekli geri getir
+        cv2.erode(self.red_mask, self.kernel3, dst=self.red_mask, iterations=1)
+        cv2.dilate(self.red_mask, self.kernel5, dst=self.red_mask, iterations=2)
+        cv2.erode(self.red_mask, self.kernel3, dst=self.red_mask, iterations=1)
+        
+        cv2.erode(blue_mask, self.kernel3, dst=self.blue_mask, iterations=1)
+        cv2.dilate(blue_mask, self.kernel5, dst=self.blue_mask, iterations=2)
+        cv2.erode(blue_mask, self.kernel3, dst=self.blue_mask, iterations=1)
+        
+        # Remove skin-colored regions from masks - YENİ
+        skin_mask = cv2.inRange(hsv_frame, self.skin_lower, self.skin_upper)
+        cv2.dilate(skin_mask, self.kernel5, dst=skin_mask, iterations=1)
+        
+        # Subtract skin regions from color masks
+        self.red_mask = cv2.bitwise_and(self.red_mask, cv2.bitwise_not(skin_mask))
+        self.blue_mask = cv2.bitwise_and(self.blue_mask, cv2.bitwise_not(skin_mask))
         
         return self.red_mask, self.blue_mask
+    
+    def validate_shape_geometry(self, contour, shape_type, color):
+        """Validate shape geometry to reduce false positives - YENİ FONKSİYON"""
+        # Calculate shape properties
+        area = cv2.contourArea(contour)
+        perimeter = cv2.arcLength(contour, True)
+        
+        # Check area bounds
+        if area < self.min_contour_area or area > self.max_contour_area:
+            return False
+        
+        # Calculate solidity (how "filled" the shape is)
+        hull = cv2.convexHull(contour)
+        hull_area = cv2.contourArea(hull)
+        if hull_area > 0:
+            solidity = area / hull_area
+            if solidity < self.min_solidity:
+                logger.debug(f"Shape rejected - low solidity: {solidity:.2f}")
+                return False
+        
+        # Calculate circularity
+        if perimeter > 0:
+            circularity = 4 * np.pi * area / (perimeter * perimeter)
+            
+            # Different circularity thresholds for different shapes
+            if shape_type == "triangle" and circularity > 0.7:
+                logger.debug(f"Triangle rejected - too circular: {circularity:.2f}")
+                return False
+            elif shape_type == "square" and (circularity < 0.6 or circularity > 0.9):
+                logger.debug(f"Square rejected - wrong circularity: {circularity:.2f}")
+                return False
+            elif shape_type == "hexagon" and circularity < 0.7:
+                logger.debug(f"Hexagon rejected - low circularity: {circularity:.2f}")
+                return False
+        
+        # Calculate aspect ratio
+        x, y, w, h = cv2.boundingRect(contour)
+        aspect_ratio = float(w) / h if h > 0 else 0
+        
+        # Check if the shape fills enough of its bounding box
+        bbox_area = w * h
+        fill_ratio = area / bbox_area if bbox_area > 0 else 0
+        
+        if fill_ratio < 0.5:  # Shape should fill at least 50% of its bounding box
+            logger.debug(f"Shape rejected - low fill ratio: {fill_ratio:.2f}")
+            return False
+        
+        # Additional validation for specific shapes
+        if shape_type == "square":
+            # Squares should have aspect ratio close to 1
+            if not (0.8 <= aspect_ratio <= 1.2):
+                logger.debug(f"Square rejected - wrong aspect ratio: {aspect_ratio:.2f}")
+                return False
+        
+        return True
     
     def isRegularHexagon(self, approx, x, y, w, h):
         if(len(approx) != 6):
@@ -357,8 +441,57 @@ class ShapeDetector:
 
         return uniform_distances and uniform_angles and proper_aspect
 
+    def update_detection_history(self, shapes):
+        """Update detection history for temporal filtering - YENİ FONKSİYON"""
+        # Convert shapes to hashable format for comparison
+        shape_signatures = set()
+        for contour, shape_type, color in shapes:
+            x, y, w, h = cv2.boundingRect(contour)
+            # Create a signature for the shape (approximate location and type)
+            signature = (
+                color,
+                shape_type,
+                int(x / 20) * 20,  # Quantize position to 20-pixel grid
+                int(y / 20) * 20,
+                int(w / 20) * 20,  # Quantize size
+                int(h / 20) * 20
+            )
+            shape_signatures.add(signature)
+        
+        self.detection_history.append(shape_signatures)
+    
+    def filter_by_temporal_consistency(self, shapes):
+        """Filter shapes based on temporal consistency - YENİ FONKSİYON"""
+        if len(self.detection_history) < self.min_detection_consistency:
+            return shapes  # Not enough history yet
+        
+        filtered_shapes = []
+        for contour, shape_type, color in shapes:
+            x, y, w, h = cv2.boundingRect(contour)
+            signature = (
+                color,
+                shape_type,
+                int(x / 20) * 20,
+                int(y / 20) * 20,
+                int(w / 20) * 20,
+                int(h / 20) * 20
+            )
+            
+            # Check how many recent frames had this shape
+            consistency_count = sum(
+                1 for frame_shapes in self.detection_history
+                if signature in frame_shapes
+            )
+            
+            if consistency_count >= self.min_detection_consistency:
+                filtered_shapes.append((contour, shape_type, color))
+            else:
+                logger.debug(f"Shape filtered out - low temporal consistency: {consistency_count}/{self.min_detection_consistency}")
+        
+        return filtered_shapes
+
     def detect_shapes(self, frame):
-        """Detect shapes with frame skipping for better performance."""
+        """Detect shapes with improved filtering."""
         # Increment frame counter
         self.frame_count += 1
         self.total_frames_processed += 1
@@ -394,6 +527,12 @@ class ShapeDetector:
         
         all_shapes = red_shapes + blue_shapes
         
+        # Update detection history
+        self.update_detection_history(all_shapes)
+        
+        # Filter by temporal consistency - YENİ
+        all_shapes = self.filter_by_temporal_consistency(all_shapes)
+        
         # Log detected shapes
         if all_shapes:
             shape_info = []
@@ -406,7 +545,7 @@ class ShapeDetector:
                 area = cv2.contourArea(contour)
                 shape_info.append(f"{color} {shape_type} (pos:{x},{y} size:{w}x{h} area:{area:.0f})")
             
-            logger.info(f"SHAPES DETECTED: {'; '.join(shape_info)}")
+            logger.info(f"VERIFIED SHAPES DETECTED: {'; '.join(shape_info)}")
         
         # Log statistics every 30 seconds
         current_time = time.time()
@@ -417,7 +556,7 @@ class ShapeDetector:
         return all_shapes
 
     def process_contours(self, mask, frame, color):
-        """Process contours with optimized algorithm for Raspberry Pi."""
+        """Process contours with improved filtering."""
         detected_shapes = []
         
         # Use RETR_EXTERNAL and CHAIN_APPROX_SIMPLE for better performance
@@ -437,7 +576,12 @@ class ShapeDetector:
         for contour in contours:
             # Fast area check
             area = cv2.contourArea(contour)
-            if area < self.min_contour_area:
+            if area < self.min_contour_area or area > self.max_contour_area:
+                continue
+            
+            # Check if contour is too complex (likely noise)
+            if len(contour) > 100:  # Too many points indicates noise - YENİ
+                logger.debug(f"Contour rejected - too complex: {len(contour)} points")
                 continue
             
             # Fast approximation to polygon
@@ -453,28 +597,31 @@ class ShapeDetector:
             if color == "red":
                 if corners == 3:
                     shape_type = "triangle"
-                    logger.debug(f"Red triangle detected: corners={corners}, area={area:.0f}")
+                    logger.debug(f"Red triangle candidate: corners={corners}, area={area:.0f}")
                 elif corners == 4:
                     # Simple aspect ratio test only
                     aspect_ratio = float(w) / h
-                    if 0.7 <= aspect_ratio <= 1.3:  # Looser bounds for better detection
+                    if 0.75 <= aspect_ratio <= 1.25:  # Tighter bounds for squares
                         shape_type = "square"
-                        logger.debug(f"Red square detected: corners={corners}, aspect_ratio={aspect_ratio:.2f}, area={area:.0f}")
+                        logger.debug(f"Red square candidate: corners={corners}, aspect_ratio={aspect_ratio:.2f}, area={area:.0f}")
             else:  # color == "blue"
                 if corners == 4:
                     # Simple aspect ratio test only
                     aspect_ratio = float(w) / h
-                    if 0.7 <= aspect_ratio <= 1.3:
+                    if 0.75 <= aspect_ratio <= 1.25:
                         shape_type = "square"
-                        logger.debug(f"Blue square detected: corners={corners}, aspect_ratio={aspect_ratio:.2f}, area={area:.0f}")
+                        logger.debug(f"Blue square candidate: corners={corners}, aspect_ratio={aspect_ratio:.2f}, area={area:.0f}")
                 elif corners == 6:
                     if self.isRegularHexagon(approx, x, y, w, h):
                         shape_type = "hexagon"
-                        logger.debug(f"Blue hexagon detected: corners={corners}, area={area:.0f}")
+                        logger.debug(f"Blue hexagon candidate: corners={corners}, area={area:.0f}")
             
-            # If shape detected, add to results
-            if shape_type:
+            # Validate shape geometry before adding - YENİ
+            if shape_type and self.validate_shape_geometry(contour, shape_type, color):
                 detected_shapes.append((contour, shape_type, color))
+                logger.debug(f"Shape validated and added: {color} {shape_type}")
+            elif shape_type:
+                logger.debug(f"Shape rejected after validation: {color} {shape_type}")
                 
         return detected_shapes
 
@@ -487,11 +634,16 @@ class ShapeDetector:
         red_color = (0, 0, 255)  # BGR format
         blue_color = (255, 0, 0)
         white_color = (255, 255, 255)
+        green_color = (0, 255, 0)  # YENİ - for confidence indicator
         
         for contour, shape_type, color in shapes:
             # Draw contour (inplace operation)
             color_bgr = red_color if color == "red" else blue_color
             cv2.drawContours(frame, [contour], -1, color_bgr, 2)
+            
+            # Draw bounding rectangle for better visualization - YENİ
+            x, y, w, h = cv2.boundingRect(contour)
+            cv2.rectangle(frame, (x, y), (x+w, y+h), green_color, 1)
             
             # Only calculate moments if needed for label positioning
             M = cv2.moments(contour)
@@ -499,10 +651,10 @@ class ShapeDetector:
                 cx = int(M["m10"] / M["m00"])
                 cy = int(M["m01"] / M["m00"])
                 
-                # Draw label (smaller font size for performance)
-                label = f"{color} {shape_type}"
-                cv2.putText(frame, label, (cx - 20, cy), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, white_color, 1)
+                # Draw label with confidence indicator
+                label = f"{color} {shape_type} [OK]"  # [OK] indicates validated shape
+                cv2.putText(frame, label, (cx - 30, cy), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, white_color, 2)
         
         return frame
     
@@ -562,6 +714,11 @@ class ShapeDetector:
         
         # Add frame counter
         cv2.putText(frame, f"Frames: {self.total_frames_processed}", (10, 50), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        
+        # Add detection status - YENİ
+        status_text = f"Shapes: {len(shapes)} | Min Area: {self.min_contour_area}"
+        cv2.putText(frame, status_text, (10, 70), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
         
         # Dynamically adjust frame processing rate based on performance
@@ -646,6 +803,7 @@ def main():
         
         logger.info("========== Shape Detection System Active ==========")
         logger.info("System running - Press 'q' to quit")
+        logger.info("Improved filtering enabled: Temporal consistency, geometry validation, noise reduction")
         
         frame_count = 0
         start_time = time.time()
@@ -671,7 +829,7 @@ def main():
                 logger.info(f"SYSTEM STATUS: Processed {frame_count} frames in {elapsed_time:.1f}s (avg: {avg_fps:.2f} FPS)")
             
             # Display the result locally (optional - can be commented out for headless operation)
-            cv2.imshow('Shape Detection with Logging', result_frame)
+            cv2.imshow('Shape Detection with Improved Filtering', result_frame)
             
             # Exit on 'q' key press (with minimal wait time)
             if cv2.waitKey(1) & 0xFF == ord('q'):
