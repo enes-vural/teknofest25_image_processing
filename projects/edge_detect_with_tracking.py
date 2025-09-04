@@ -133,17 +133,15 @@ class ObjectTracker:
     def calculate_shape_similarity(self, contour1: np.ndarray, contour2: np.ndarray) -> float:
         """Calculate shape similarity using Hu moments."""
         try:
-            # Calculate Hu moments for both contours
+            # Kontürün geometrik momentlerini hesaplar.
+            # özellikleri ağırlık merkezi vs.
             moments1 = cv2.moments(contour1)
             moments2 = cv2.moments(contour2)
-            
+            #kontürün alanı 0 ise 0.0 döndürür.
             if moments1['m00'] == 0 or moments2['m00'] == 0:
                 return 0.0
-                
-            hu1 = cv2.HuMoments(moments1).flatten()
-            hu2 = cv2.HuMoments(moments2).flatten()
             
-            # Calculate similarity (lower is more similar)
+            # contoue
             similarity = cv2.matchShapes(contour1, contour2, cv2.CONTOURS_MATCH_I1, 0)
             return max(0.0, 1.0 - similarity)  # Convert to similarity score (0-1)
         except:

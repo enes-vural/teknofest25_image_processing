@@ -5,7 +5,7 @@ import time
 
 
 #video path for fetch the video that Azize's created.
-video_path = "firtina-iha/assets/object_video5.mp4"
+video_path = "/Users/sakastudio/development-py/firtina-iha/assets/object_video5.mp4"
 
 #capture the video with given path as video_path
 video = cv2.VideoCapture(video_path)
