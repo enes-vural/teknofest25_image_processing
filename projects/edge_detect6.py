@@ -1,4 +1,20 @@
-import socket
+def log_statistics(self):
+        """Tespit istatistiklerini logla."""
+        total_shapes = sum(self.shapes_detected_count.values())
+        print_important("=== TESPİT İSTATİSTİKLERİ (Son 30 saniye) ===")
+        logger.info(f"Toplam işlenen frame: {self.total_frames_processed}")
+        logger.info(f"Toplam tespit edilen şekil: {total_shapes}")
+        
+        shape_names = {
+            'kirmizi_ucgen': 'Kırmızı Üçgen',
+            'kirmizi_kare': 'Kırmızı Kare', 
+            'mavi_kare': 'Mavi Kare',
+            'mavi_altigen': 'Mavi Altıgen'
+        }
+        
+        for shape_type, count in self.shapes_detected_count.items():
+            if count > 0:
+                shape_name = shape_names.getimport socket
 import cv2
 import numpy as np
 import time
@@ -705,7 +721,7 @@ def main():
 
 
 if __name__ == "__main__":
-    # Check for required modules
+    # Gerekli modülleri kontrol et
     import sys
     required_modules = ['cv2', 'numpy', 'subprocess']
     missing_modules = []
@@ -717,17 +733,18 @@ if __name__ == "__main__":
             missing_modules.append(module)
     
     if missing_modules:
-        print(f"ERROR: Missing required modules: {', '.join(missing_modules)}")
-        print("Please install them using: pip install " + ' '.join(missing_modules))
+        print(f"HATA: Eksik gerekli modüller: {', '.join(missing_modules)}")
+        print("Lütfen bunları yükleyin: pip install " + ' '.join(missing_modules))
         sys.exit(1)
     
-    # Check for GStreamer support in OpenCV
+    # OpenCV'de GStreamer desteğini kontrol et
     if not cv2.getBuildInformation().find('GStreamer') != -1:
-        print("WARNING: OpenCV was not built with GStreamer support.")
-        print("This program requires OpenCV with GStreamer support to function correctly.")
-        user_input = input("Continue anyway? (y/n): ")
-        if user_input.lower() != 'y':
+        print("UYARI: OpenCV GStreamer desteği ile derlenmemiş.")
+        print("Bu program düzgün çalışması için GStreamer destekli OpenCV gerektirir.")
+        user_input = input("Yine de devam edilsin mi? (e/h): ")
+        if user_input.lower() != 'e':
             sys.exit(1)
     
-    # Start the main program
+    print_important("Şekil Tespit Sistemi başlatılıyor...")
+    # Ana programı başlat
     main()
