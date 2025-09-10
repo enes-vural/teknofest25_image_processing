@@ -12,6 +12,34 @@ import signal
 from collections import defaultdict
 import logging
 from datetime import datetime
+import RPi.GPIO as GPIO
+import time
+
+# GPIO pinini ayarla (servo motorun sinyal kablosu bu pine bağlanacak)
+servo_pin = 17
+
+
+def set_angle(angle):
+    """
+    Servo motoru belirtilen açıya döndür
+    angle: 0-180 derece arası değer
+    """
+    # Açıyı PWM duty cycle'a çevir
+    # 0° = 2.5% duty cycle, 180° = 12.5% duty cycle
+    duty_cycle = 2 + (angle / 18)
+    GPIO.output(servo_pin, True)
+    pwm.ChangeDutyCycle(duty_cycle)
+    time.sleep(0.5)  # Servo motorun hareket etmesi için bekle
+    GPIO.output(servo_pin, False)
+    pwm.ChangeDutyCycle(0)
+
+# GPIO ayarları
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(servo_pin, GPIO.OUT)
+
+# PWM ayarları (50Hz frekans - servo motorlar için standart)
+pwm = GPIO.PWM(servo_pin, 50)
+pwm.start(0)  # %0 duty cycle ile başla
 
 # Camera Configuration
 WIDTH, HEIGHT = 640, 480
@@ -454,23 +482,32 @@ class ShapeDetector:
                 if corners == 3:
                     shape_type = "triangle"
                     logger.debug(f"Red triangle detected: corners={corners}, area={area:.0f}")
-                elif corners == 4:
-                    # Simple aspect ratio test only
-                    aspect_ratio = float(w) / h
-                    if 0.7 <= aspect_ratio <= 1.3:  # Looser bounds for better detection
-                        shape_type = "square"
-                        logger.debug(f"Red square detected: corners={corners}, aspect_ratio={aspect_ratio:.2f}, area={area:.0f}")
+                    set_angle(75)
+                    time.sleep(3)
+                    set_angle(35)
+                    #TODO triangle algortiması yazılacak
+                # elif corners == 4:
+                #     # Simple aspect ratio test only
+                #     aspect_ratio = float(w) / h
+                #     if 0.7 <= aspect_ratio <= 1.3:  # Looser bounds for better detection
+                #         shape_type = "square"
+                #         logger.debug(f"Red square detected: corners={corners}, aspect_ratio={aspect_ratio:.2f}, area={area:.0f}")
             else:  # color == "blue"
-                if corners == 4:
-                    # Simple aspect ratio test only
-                    aspect_ratio = float(w) / h
-                    if 0.7 <= aspect_ratio <= 1.3:
-                        shape_type = "square"
-                        logger.debug(f"Blue square detected: corners={corners}, aspect_ratio={aspect_ratio:.2f}, area={area:.0f}")
-                elif corners == 6:
+                # if corners == 4:
+                #     # Simple aspect ratio test only
+                #     aspect_ratio = float(w) / h
+                #     if 0.7 <= aspect_ratio <= 1.3:
+                #         shape_type = "square"
+                #         logger.debug(f"Blue square detected: corners={corners}, aspect_ratio={aspect_ratio:.2f}, area={area:.0f}")
+                if corners == 6:
                     if self.isRegularHexagon(approx, x, y, w, h):
                         shape_type = "hexagon"
                         logger.debug(f"Blue hexagon detected: corners={corners}, area={area:.0f}")
+                        set_angle(0)
+                        time.sleep(3)
+                        set_angle(35)
+                        #TODO hexagon algortiması yazılacak
+
             
             # If shape detected, add to results
             if shape_type:
@@ -628,6 +665,8 @@ def main():
     # Initialize camera with GStreamer pipeline
     try:
         capture = GstreamerCamera()
+        #TODO DEFAULT SERVO DEGREE
+        set_angle(35)
         
         # Allow camera to warm up
         time.sleep(2.0)
