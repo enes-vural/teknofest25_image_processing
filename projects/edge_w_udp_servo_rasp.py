@@ -169,19 +169,20 @@ class GstreamerCamera:
     
     def start_stream(self):
         """Start libcamera-vid streaming process with optimized parameters."""
+        """Start libcamera-vid streaming process with optimized parameters."""
         cmd = """
         libcamera-vid -t 0 \
         --nopreview \
         --width 640 --height 480 \
         --mode 1280:720 \
         --framerate 30 \
-        --shutter 20000 \
-        --gain 3 \
+        --shutter 5000 \
+        --gain 1 \
         --denoise cdn_off \
-        --brightness 0.1 \
-        --contrast 1.2 \
+        --brightness -0.3 \
+        --contrast 1.0 \
         --sharpness 1.5 \
-        --ev 0.1 \
+        --ev -1.0 \
         --awb auto \
         --autofocus-mode continuous \
         --autofocus-speed fast \
