@@ -1,4 +1,427 @@
-# Fırtına İHA - TEKNOFEST Uluslarası İnsansız Hava Araçları Yarışması Döner Kanat Kategorisi Görüntü İşleme Projesi.
+# ENGLISH
+
+# Fırtına UAV - TEKNOFEST International Unmanned Aerial Vehicles Competition Rotorcraft Category Computer Vision Project
+## Technical Documentation and User Manual
+
+### 📋 Project Overview
+
+This project is the "Fırtına UAV" software repository developed for **Teknofest 2025 competition**. It is an advanced Python/OpenCV application optimized for **real-time colored shape detection** on relatively low-power hardware such as Raspberry Pi.
+
+### 🎯 Key Features
+- **Real-time shape detection:** Detection of red and blue triangles, squares, hexagons
+- **Hardware optimization:** Special performance settings for Raspberry Pi
+- **Asynchronous video processing:** Thread-based camera management
+- **Dynamic performance adjustment:** FPS tracking and automatic frame skipping
+- **Reliable system:** Error-tolerant design
+
+---
+
+## 🛠 System Requirements
+
+### Hardware Requirements
+- **Main Platform:** Raspberry Pi 3B+ or higher (recommended: Raspberry Pi 4)
+- **RAM:** Minimum 2GB (4GB recommended)
+- **Camera:** USB camera or Raspberry Pi camera module
+- **Storage:** Minimum 8GB SD card (Class 10)
+- **Power:** 5V/3A power supply
+
+### Software Requirements
+- **Operating System:** Raspberry Pi OS (Bullseye or later)
+- **Python Version:** Python 3.7+
+- **OpenCV:** 4.5.0+
+
+### Core Dependencies
+```bash
+# Main libraries
+opencv-python>=4.5.0
+numpy>=1.19.0
+imutils>=0.5.4
+
+# Hardware optimization libraries
+psutil>=5.8.0          # CPU and memory management
+threading              # Asynchronous operations (Python built-in)
+queue                  # Buffer management (Python built-in)
+```
+
+---
+
+## 📂 Project Structure
+
+```
+teknofest25_image_processing/
+├── src/
+│   ├── main.py                    # Main application file
+│   ├── async_video_capture.py     # Asynchronous video capture class
+│   ├── shape_detector.py          # Shape detection class
+│   └── hardware_optimizer.py      # Hardware optimization module
+├── config/
+│   ├── camera_config.json         # Camera settings
+│   ├── color_ranges.json          # Color detection ranges
+│   └── performance_config.json    # Performance settings
+├── utils/
+│   ├── fps_counter.py            # FPS calculation utilities
+│   └── system_monitor.py         # System status monitoring
+├── docs/
+│   ├── installation.md           # Installation guide
+│   └── troubleshooting.md        # Troubleshooting
+└── requirements.txt              # Dependency list
+```
+
+---
+
+## 🚀 Installation and Running
+
+### 1. System Preparation (Raspberry Pi)
+```bash
+# System update
+sudo apt update && sudo apt upgrade -y
+
+# Required system packages
+sudo apt install python3-pip python3-venv git -y
+sudo apt install libatlas-base-dev libhdf5-dev libhdf5-serial-dev -y
+sudo apt install libharfbuzz0b libwebp6 libtiff5 libjasper1 libilmbase25 -y
+sudo apt install libopenexr25 libgstreamer1.0-0 libavcodec58 libavformat58 libswscale5 -y
+```
+
+### 2. Project Download and Installation
+```bash
+# Clone the project
+git clone https://github.com/enes-vural/teknofest25_image_processing.git
+cd teknofest25_image_processing
+
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+### 3. Camera Settings
+```bash
+# For Raspberry Pi camera module
+sudo raspi-config
+# Interface Options > Camera > Enable
+
+# USB camera test
+v4l2-ctl --list-devices
+```
+
+### 4. Running the Application
+```bash
+# Basic execution
+python3 src/main.py
+
+# Performance mode execution
+sudo python3 src/main.py --performance-mode
+
+# Debug mode
+python3 src/main.py --debug --show-fps
+```
+
+---
+
+## ⚙️ Technical Details
+
+### 1. Hardware and Performance Optimization
+
+#### CPU Optimizations
+- **NEON SIMD** activation (fast vector operations on ARM processors)
+- **CPU performance mode** temporary activation
+- **Process priority (nice)** adjustment
+- **CPU core assignment** (CPU affinity)
+
+```python
+# Example optimization code
+import os
+import psutil
+
+def optimize_cpu():
+    # CPU performance mode
+    os.system('echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor')
+    
+    # Process priority
+    proc = psutil.Process()
+    proc.nice(-10)  # High priority
+    
+    # CPU core assignment
+    proc.cpu_affinity([2, 3])  # Use cores 2 and 3
+```
+
+#### Memory Optimizations
+- **HDMI output deactivation** (if not in use)
+- **GPU memory sharing** optimization
+- **Buffer size** dynamic adjustment
+
+### 2. Asynchronous Video Capture (AsyncVideoCapture)
+
+#### Features
+- **Thread-based video capture:** Camera operations independent of main program
+- **Buffer system:** Frame holding with small queue (typical: 2-3 frames)
+- **Automatic frame dropping:** Drop old frames when buffer is full
+- **Low resolution:** 320x240 pixels (for performance)
+- **Fixed FPS:** 30 FPS target
+
+```python
+class AsyncVideoCapture:
+    def __init__(self, src=0, buffer_size=2):
+        self.cap = cv2.VideoCapture(src)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+        self.cap.set(cv2.CAP_PROP_FPS, 30)
+        
+        self.q = queue.Queue(maxsize=buffer_size)
+        self.running = True
+        
+    def start(self):
+        self.thread = threading.Thread(target=self.update)
+        self.thread.start()
+        
+    def update(self):
+        while self.running:
+            ret, frame = self.cap.read()
+            if not ret:
+                continue
+                
+            if not self.q.empty():
+                try:
+                    self.q.get_nowait()  # Drop old frame
+                except queue.Empty:
+                    pass
+                    
+            self.q.put(frame)
+```
+
+### 3. Shape Detection System (ShapeDetector)
+
+#### Color-Based Masking
+- **HSV color space** usage (more stable color detection)
+- **Separate masks** for red and blue
+- **Color ranges** read from configuration
+
+```python
+# HSV color ranges example
+color_ranges = {
+    "red": {
+        "lower1": [0, 120, 120],    # Lower red range
+        "upper1": [10, 255, 255],
+        "lower2": [160, 120, 120],  # Upper red range
+        "upper2": [179, 255, 255]
+    },
+    "blue": {
+        "lower": [100, 120, 120],
+        "upper": [130, 255, 255]
+    }
+}
+```
+
+#### Morphological Operations
+- **Dilate operation:** Closing gaps in masks
+- **Median blur:** Fast noise reduction
+- **Small contour filtering:** Area-based filtering
+
+#### Shape Recognition Algorithm
+- **Contour approximation:** Douglas-Peucker algorithm
+- **Vertex count:** 3=triangle, 4=square, 6=hexagon
+- **Area and ratio checks:** Minimum size and geometric ratios
+- **Real-time labeling:** Shape type and color display
+
+```python
+def detect_shape(self, contour):
+    # Contour approximation
+    peri = cv2.arcLength(contour, True)
+    approx = cv2.approxPolyDP(contour, 0.04 * peri, True)
+    
+    # Shape determination by vertex count
+    vertices = len(approx)
+    
+    if vertices == 3:
+        return "triangle"
+    elif vertices == 4:
+        # Square vs rectangle check
+        (x, y, w, h) = cv2.boundingRect(approx)
+        ar = w / float(h)
+        return "square" if ar >= 0.95 and ar <= 1.05 else "rectangle"
+    elif vertices == 6:
+        return "hexagon"
+    else:
+        return "circle"
+```
+
+### 4. Real-Time FPS Calculation and Dynamic Adjustment
+
+#### FPS Tracking
+- **Rolling average:** Average of last 10 frames
+- **Frame timing:** Processing time measurement per frame
+- **Performance metrics:** CPU usage, memory status
+
+#### Dynamic Frame Skipping
+```python
+class PerformanceManager:
+    def __init__(self, target_fps=15):
+        self.target_fps = target_fps
+        self.frame_times = []
+        self.skip_counter = 0
+        
+    def should_process_frame(self):
+        avg_fps = self.get_average_fps()
+        
+        if avg_fps < self.target_fps * 0.8:  # If below 80%
+            self.skip_counter += 1
+            return self.skip_counter % 2 == 0  # Process every other frame
+        else:
+            self.skip_counter = 0
+            return True  # Process every frame
+```
+
+---
+
+## 🔧 Configuration
+
+### Camera Settings (camera_config.json)
+```json
+{
+    "resolution": {
+        "width": 320,
+        "height": 240
+    },
+    "fps": 30,
+    "buffer_size": 2,
+    "auto_exposure": true,
+    "brightness": 50,
+    "contrast": 50
+}
+```
+
+### Color Detection Ranges (color_ranges.json)
+```json
+{
+    "colors": {
+        "red": {
+            "hsv_lower1": [0, 120, 120],
+            "hsv_upper1": [10, 255, 255],
+            "hsv_lower2": [160, 120, 120],
+            "hsv_upper2": [179, 255, 255]
+        },
+        "blue": {
+            "hsv_lower": [100, 120, 120],
+            "hsv_upper": [130, 255, 255]
+        }
+    }
+}
+```
+
+### Performance Settings (performance_config.json)
+```json
+{
+    "cpu_optimization": {
+        "enable_performance_mode": true,
+        "nice_value": -10,
+        "cpu_affinity": [2, 3]
+    },
+    "memory_optimization": {
+        "disable_hdmi": true,
+        "gpu_memory_split": 64
+    },
+    "processing": {
+        "target_fps": 15,
+        "min_contour_area": 500,
+        "max_contour_area": 50000,
+        "frame_skip_threshold": 0.8
+    }
+}
+```
+
+---
+
+## 📊 Performance Metrics
+
+### Typical Performance Values (Raspberry Pi 4)
+- **Processing Speed:** 12-18 FPS (at 320x240 resolution)
+- **CPU Usage:** 40-60%
+- **RAM Usage:** ~150-200MB
+- **Detection Latency:** 50-80ms
+- **Power Consumption:** ~8-12W (with optimization)
+
+### Performance Improvement Tips
+1. **Resolution reduction:** 320x240 → 240x180
+2. **FPS limiting:** 30 FPS → 20 FPS
+3. **Buffer size:** 2 → 1 (less latency)
+4. **Color masking:** Single color detection
+5. **GPU overclock:** Raspberry Pi configuration
+
+---
+
+## 🚨 Troubleshooting
+
+### Common Issues and Solutions
+
+#### 1. Camera Not Recognized
+```bash
+# Problem: Camera not found
+# Solution:
+sudo modprobe bcm2835-v4l2  # For Pi camera
+v4l2-ctl --list-devices      # List available cameras
+```
+
+#### 2. Low FPS Performance
+```python
+# Problem: Very low FPS
+# Solution: Reduce resolution
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 240)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 180)
+```
+
+#### 3. High CPU Usage
+```bash
+# Problem: 100% CPU usage
+# Solution: Enable frame skipping
+python3 src/main.py --frame-skip 2
+```
+
+#### 4. Memory Shortage
+```bash
+# Problem: Memory exhaustion
+# Solution: GPU memory allocation
+sudo raspi-config
+# Advanced Options > Memory Split > 64MB
+```
+
+### Debug Commands
+```bash
+# System status check
+htop
+iostat 1
+vcgencmd measure_temp
+
+# Camera status
+vcgencmd get_camera
+v4l2-ctl --all
+
+# OpenCV optimization check
+python3 -c "import cv2; print(cv2.getBuildInformation())"
+```
+
+---
+
+## 📞 Support and Contact
+
+### Project Owner
+- **Developer:** Enes Vural
+- **GitHub:** [@enes-vural](https://github.com/enes-vural)
+- **Project Repository:** [teknofest25_image_processing](https://github.com/enes-vural/teknofest25_image_processing)
+
+**Last Update:** September 2025  
+**Version:** 1.0.0
+
+
+
+
+
+# TURKISH
+
+
+# Fırtına İHA - Teknofest 2025 Görüntü İşleme Projesi
 ## Teknik Dokümantasyon ve Kullanıcı El Kitabı
 
 ### 📋 Proje Genel Bakış
@@ -400,6 +823,25 @@ v4l2-ctl --all
 python3 -c "import cv2; print(cv2.getBuildInformation())"
 ```
 
+---
+
+## 📈 Gelecek Geliştirmeler
+
+### Planlanan Özellikler
+- [ ] **YOLOv8 entegrasyonu:** Daha gelişmiş nesne tespiti
+- [ ] **Multi-threading:** Paralel renk işleme
+- [ ] **Kalman filtering:** Şekil takibi ve tahminleme
+- [ ] **Web arayüzü:** Uzaktan monitoring
+- [ ] **MQTT iletişimi:** IoT entegrasyonu
+- [ ] **Edge AI optimizasyonu:** TensorFlow Lite desteği
+
+### Performans İyileştirmeleri
+- [ ] **GPU acceleration:** OpenCV CUDA desteği
+- [ ] **Assembly optimizasyonu:** Kritik döngüler için
+- [ ] **Memory pooling:** Bellek tahsisi optimizasyonu
+- [ ] **Adaptive filtering:** Dinamik parametre ayarlama
+
+---
 
 ## 📞 Destek ve İletişim
 
@@ -407,6 +849,11 @@ python3 -c "import cv2; print(cv2.getBuildInformation())"
 - **Geliştirici:** Enes Vural
 - **GitHub:** [@enes-vural](https://github.com/enes-vural)
 - **Proje Reposu:** [teknofest25_image_processing](https://github.com/enes-vural/teknofest25_image_processing)
+
+### Lisans
+Bu proje Teknofest 2025 yarışması kapsamında geliştirilmiştir. Kullanım koşulları için projenin LICENSE dosyasını inceleyiniz.
+
+---
 
 **Son Güncelleme:** Eylül 2025  
 **Versiyon:** 1.0.0  
