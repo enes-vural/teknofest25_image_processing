@@ -43,32 +43,6 @@ threading              # Asynchronous operations (Python built-in)
 queue                  # Buffer management (Python built-in)
 ```
 
----
-
-## 📂 Project Structure
-
-```
-teknofest25_image_processing/
-├── src/
-│   ├── main.py                    # Main application file
-│   ├── async_video_capture.py     # Asynchronous video capture class
-│   ├── shape_detector.py          # Shape detection class
-│   └── hardware_optimizer.py      # Hardware optimization module
-├── config/
-│   ├── camera_config.json         # Camera settings
-│   ├── color_ranges.json          # Color detection ranges
-│   └── performance_config.json    # Performance settings
-├── utils/
-│   ├── fps_counter.py            # FPS calculation utilities
-│   └── system_monitor.py         # System status monitoring
-├── docs/
-│   ├── installation.md           # Installation guide
-│   └── troubleshooting.md        # Troubleshooting
-└── requirements.txt              # Dependency list
-```
-
----
-
 ## 🚀 Installation and Running
 
 ### 1. System Preparation (Raspberry Pi)
@@ -462,30 +436,6 @@ imutils>=0.5.4
 psutil>=5.8.0          # CPU ve bellek yönetimi
 threading              # Asenkron işlemler (Python built-in)
 queue                  # Buffer yönetimi (Python built-in)
-```
-
----
-
-## 📂 Proje Yapısı
-
-```
-teknofest25_image_processing/
-├── src/
-│   ├── main.py                    # Ana uygulama dosyası
-│   ├── async_video_capture.py     # Asenkron video yakalama sınıfı
-│   ├── shape_detector.py          # Şekil tespit sınıfı
-│   └── hardware_optimizer.py      # Donanım optimizasyon modülü
-├── config/
-│   ├── camera_config.json         # Kamera ayarları
-│   ├── color_ranges.json          # Renk tespit aralıkları
-│   └── performance_config.json    # Performans ayarları
-├── utils/
-│   ├── fps_counter.py            # FPS hesaplama yardımcıları
-│   └── system_monitor.py         # Sistem durumu izleme
-├── docs/
-│   ├── installation.md           # Kurulum kılavuzu
-│   └── troubleshooting.md        # Sorun giderme
-└── requirements.txt              # Bağımlılık listesi
 ```
 
 ---
